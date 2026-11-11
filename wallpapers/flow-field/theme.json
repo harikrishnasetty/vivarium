@@ -1,0 +1,16 @@
+{
+  "id": "flow-field",
+  "name": "Flow Field",
+  "category": "Generative",
+  "tagline": "Silk currents that part around your icons.",
+  "desc": "Thousands of luminous particles ride a slow curl-noise field, leaving long silk trails. Desktop icons become soft obstacles: the current bends, splits and swirls around every tile.",
+  "tags": ["generative", "flow", "particles", "silk", "adaptive"],
+  "thumb": { "from": "#04131c", "to": "#1f8f83", "accent": "#b6ffe4" },
+  "params": [
+    { "group": "Field", "key": "density", "label": "Density", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.6 },
+    { "group": "Field", "key": "speed", "label": "Flow speed", "type": "range", "min": 0, "max": 2, "step": 0.1, "default": 1 },
+    { "group": "Field", "key": "swirl", "label": "Icon swirl", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.4 },
+    { "group": "Look", "key": "trail", "label": "Trail fade", "type": "range", "min": 0.02, "max": 0.2, "step": 0.01, "default": 0.06 },
+    { "group": "Look", "key": "palette", "label": "Palette", "type": "select", "options": [["aurora", "Aurora"], ["ember", "Ember"], ["ocean", "Ocean"]], "default": "aurora" }
+  ]
+}

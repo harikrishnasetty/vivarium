@@ -1,0 +1,16 @@
+{
+  "id": "video",
+  "name": "Video",
+  "category": "Media",
+  "tagline": "Your own footage, looped behind the desktop.",
+  "desc": "Plays a local video file as the wallpaper. Pick any MP4, WebM or MOV from the Media page. Files are read in place and never copied or uploaded.",
+  "tags": ["media", "video", "personal"],
+  "thumb": { "from": "#0a0f14", "to": "#2a4b5e", "accent": "#8fd3e8" },
+  "params": [
+    { "group": "Playback", "key": "fit", "label": "Scaling", "type": "select", "options": [["cover", "Fill the screen"], ["contain", "Fit inside"], ["stretch", "Stretch"]], "default": "cover" },
+    { "group": "Playback", "key": "speed", "label": "Speed", "type": "range", "min": 0.25, "max": 2, "step": 0.05, "default": 1 },
+    { "group": "Look", "key": "dim", "label": "Dim", "type": "range", "min": 0, "max": 0.8, "step": 0.05, "default": 0.12 },
+    { "group": "Look", "key": "grain", "label": "Film grain", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.2 },
+    { "group": "Look", "key": "vignette", "label": "Vignette", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.35 }
+  ]
+}

@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emberfall — Vivarium</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #2a0f0a; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script type="module">
+import { Vivarium, TAU, clamp, lerp, smoothstep, makeNoise2D, fbm, mulberry32, hexToRgb, mixHex, rgba } from '../_runtime/engine.js';
+
+const V = await Vivarium.ready;
+const view = V.canvas('stage');
+const ctx = view.ctx;
+
+/* Params, palette and light styles. */
+const DEFAULTS = { leaves: 90, wind: 1, light: 'auto', birds: true, haze: 0.45 };
+let P = Object.assign({}, DEFAULTS, V.params);
+V.on('params', (p) => {
+  const prev = P;
+  P = Object.assign({}, P, p);
+  if (prev.leaves !== P.leaves) buildLeaves();
+  if (prev.light !== P.light) rebuildLayers();
+});
+
+const STYLES = ['golden', 'noon', 'dusk'];
+const SKY = {
+  golden: ['#e8a878', '#f2a65a', '#ffe8c2'],
+  noon: ['#a7c4cf', '#e3d3ac', '#fff5dd'],
+  dusk: ['#3c1520', '#a8472a', '#f0a05c'],
+};
+const HAZE = { golden: '#f6c894', noon: '#e6dcc2', dusk: '#b26a48' };
+const SUNCOL = { golden: '#fff1cb', noon: '#fffbe8', dusk: '#ffbc78' };
+const SUNPOS = { golden: { x: 0.68, y: 0.55 }, noon: { x: 0.58, y: 0.34 }, dusk: { x: 0.80, y: 0.62 } };
+const LAYERS = [
+  { base: 0.565, amp: 0.050, freq: 1.6, far: 1.00, trees: 16, treeH: 0.042, seed: 101 },
+  { base: 0.640, amp: 0.070, freq: 2.1, far: 0.66, trees: 14, treeH: 0.070, seed: 202 },
+  { base: 0.735, amp: 0.082, freq: 2.7, far: 0.34, trees: 9, treeH: 0.112, seed: 303 },
+  { base: 0.862, amp: 0.045, freq: 3.3, far: 0.10, trees: 5, treeH: 0.185, seed: 404 },
+];
+const ridgeNoise = makeNoise2D(1207);
+const windNoise = makeNoise2D(3301);
+let W = 0, H = 0, layers = [], leaves = [], lightKeyCache = '';
+let mistTile = null, shadowSprite = null, leafSprites = [], leafRnd = mulberry32(1);
+const bird = { active: false, next: 7 + Math.random() * 8, t0: 0, dir: 1, y: 0, seed: 0 };
+
+function toHex(r, g, b) {
+  const n = ((1 << 24) + (Math.round(r) << 16) + (Math.round(g) << 8) + Math.round(b)) >>> 0;
+  return '#' + n.toString(16).slice(1);
+}
+
+function blendColors(cols, w) {
+  const a = hexToRgb(cols[0]), b = hexToRgb(cols[1]), c = hexToRgb(cols[2]);
+  return toHex(a.r * w.golden + b.r * w.noon + c.r * w.dusk,
+    a.g * w.golden + b.g * w.noon + c.g * w.dusk,
+    a.b * w.golden + b.b * w.noon + c.b * w.dusk);
+}
+
+function lightWeights() {
+  const w = { golden: 0, noon: 0, dusk: 0 };
+  if (P.light !== 'auto' && w[P.light] !== undefined) { w[P.light] = 1; return w; }
+  const h = V.time.dayFrac * 24, sr = V.time.sunrise, ss = V.time.sunset;
+  w.noon = smoothstep(sr + 1.6, sr + 4, h) * (1 - smoothstep(ss - 4, ss - 1.6, h));
+  w.golden = clamp(1 - Math.abs(h - (sr + 0.7)) / 2, 0, 1) + clamp(1 - Math.abs(h - (ss - 0.7)) / 2, 0, 1);
+  w.dusk = clamp(1 - Math.abs(h - (ss + 1.6)) / 2.6, 0, 1) + clamp(1 - Math.abs(h - (sr - 1.6)) / 2.6, 0, 1);
+  const sum = w.golden + w.noon + w.dusk;
+  if (sum < 0.05) { w.dusk = 1; return w; }
+  w.golden /= sum; w.noon /= sum; w.dusk /= sum;
+  return w;
+}
+
+function lightKey(w) { return STYLES.map((k) => Math.round(w[k] * 4) / 4).join(','); }
+
+function sunState(w) {
+  let x = 0, y = 0;
+  for (let i = 0; i < 3; i++) { x += SUNPOS[STYLES[i]].x * w[STYLES[i]]; y += SUNPOS[STYLES[i]].y * w[STYLES[i]]; }
+  return { x: W * x, y: H * y };
+}
+
+/* Pre-rendered leaf, mist and shadow sprites. */
+function makeLeafSprite(kind) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  g.translate(32, 32);
+  if (kind === 0) {
+    const grad = g.createLinearGradient(0, -28, 0, 28);
+    grad.addColorStop(0, '#f2a65a'); grad.addColorStop(0.55, '#d9713a'); grad.addColorStop(1, '#a8431f');
+    g.fillStyle = grad;
+    g.beginPath(); g.moveTo(0, -28);
+    g.bezierCurveTo(19, -17, 18, 14, 0, 27); g.bezierCurveTo(-18, 14, -19, -17, 0, -28);
+    g.fill();
+    g.strokeStyle = 'rgba(255,232,194,0.42)'; g.lineWidth = 1.1;
+    g.beginPath(); g.moveTo(0, -23); g.lineTo(0, 24); g.stroke();
+    g.lineWidth = 0.8;
+    for (let i = 0; i < 4; i++) {
+      const y = -12 + i * 8;
+      g.beginPath(); g.moveTo(0, y); g.lineTo(8 - i, y + 7); g.moveTo(0, y); g.lineTo(-8 + i, y + 7); g.stroke();
+    }
+  } else if (kind === 1) {
+    const grad = g.createRadialGradient(-6, -8, 2, 0, 0, 30);
+    grad.addColorStop(0, '#ffd08a'); grad.addColorStop(0.5, '#d9713a'); grad.addColorStop(1, '#9c3a1c');
+    g.fillStyle = grad;
+    g.beginPath();
+    for (let a = 0; a <= TAU + 0.01; a += 0.12) {
+      const r = 19 + 9 * Math.cos(5 * a) + 2.4 * Math.cos(10 * a);
+      const x = Math.cos(a) * r, y = Math.sin(a) * r;
+      if (a === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+    g.closePath(); g.fill();
+    g.strokeStyle = 'rgba(90,28,12,0.5)'; g.lineWidth = 1;
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI / 2 + (i * TAU) / 5;
+      g.beginPath(); g.moveTo(0, 0); g.lineTo(Math.cos(a) * 23, Math.sin(a) * 23); g.stroke();
+    }
+  } else {
+    const grad = g.createLinearGradient(-14, -16, 14, 18);
+    grad.addColorStop(0, '#ffe8c2'); grad.addColorStop(0.55, '#f2b064'); grad.addColorStop(1, '#c75b2a');
+    g.fillStyle = grad;
+    g.beginPath(); g.ellipse(0, 0, 13, 22, 0.35, 0, TAU); g.fill();
+    g.strokeStyle = 'rgba(120,44,18,0.35)'; g.lineWidth = 1;
+    g.beginPath(); g.ellipse(0, 0, 8, 16, 0.35, 0, TAU); g.stroke();
+  }
+  return c;
+}
+
+function makeMistTile() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 160;
+  const g = c.getContext('2d');
+  const r = mulberry32(8181);
+  for (let i = 0; i < 24; i++) {
+    const x = r() * 512, y = 36 + r() * 96, rad = 42 + r() * 100;
+    const grad = g.createRadialGradient(x, y, 0, x, y, rad);
+    grad.addColorStop(0, 'rgba(255,236,206,0.22)'); grad.addColorStop(1, 'rgba(255,236,206,0)');
+    g.fillStyle = grad;
+    g.beginPath(); g.arc(x, y, rad, 0, TAU); g.fill();
+  }
+  mistTile = c;
+}
+
+function makeShadowSprite() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grad.addColorStop(0, 'rgba(42,15,10,0.55)'); grad.addColorStop(0.55, 'rgba(42,15,10,0.26)'); grad.addColorStop(1, 'rgba(42,15,10,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
+  shadowSprite = c;
+}
+
+function drawTree(g, x, y, h, color, rnd) {
+  const lean = (rnd() - 0.5) * 0.5, trunkH = h * 0.55;
+  g.fillStyle = color;
+  g.beginPath();
+  g.moveTo(x - h * 0.024, y + 4);
+  g.quadraticCurveTo(x - h * 0.012 + lean * h * 0.06, y - trunkH * 0.55, x + lean * h * 0.10 - h * 0.010, y - trunkH);
+  g.lineTo(x + lean * h * 0.10 + h * 0.010, y - trunkH);
+  g.quadraticCurveTo(x + h * 0.014 + lean * h * 0.06, y - trunkH * 0.55, x + h * 0.024, y + 4);
+  g.closePath(); g.fill();
+  g.strokeStyle = color; g.lineWidth = Math.max(1, h * 0.016);
+  g.beginPath();
+  g.moveTo(x + lean * h * 0.05, y - trunkH * 0.72); g.lineTo(x + lean * h * 0.13 - h * 0.17, y - trunkH * 1.10);
+  g.moveTo(x + lean * h * 0.06, y - trunkH * 0.82); g.lineTo(x + lean * h * 0.13 + h * 0.15, y - trunkH * 1.18);
+  g.stroke();
+  const cy = y - h * 0.74, rad = h * 0.30;
+  for (let i = 0; i < 8; i++) {
+    const a = rnd() * TAU, d = rnd() * rad * 0.9, cr = rad * (0.34 + rnd() * 0.34);
+    g.beginPath(); g.arc(x + lean * h * 0.09 + Math.cos(a) * d, cy + Math.sin(a) * d * 0.72, cr, 0, TAU); g.fill();
+  }
+}
+
+/* Baked ridge and canopy layers. */
+function ridgeY(x, L, seed) {
+  return H * L.base - fbm(ridgeNoise, x * 0.0015 * L.freq + seed, L.base * 31 + 7, 3) * H * L.amp;
+}
+
+function buildLayer(L, idx, haze) {
+  const shade = mixHex('#2a0f0a', haze, 0.06 + L.far * 0.58);
+  const treeCol = mixHex(shade, '#1a0806', 0.34);
+  const top = Math.max(0, Math.floor(H * (L.base - L.amp) - H * L.treeH * 1.5 - 24));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, W); c.height = Math.max(1, Math.ceil(H - top));
+  const g = c.getContext('2d');
+  g.translate(0, -top);
+  const step = Math.max(6, W / 150);
+
+  g.beginPath(); g.moveTo(0, H + 8);
+  for (let x = 0; x <= W + step; x += step) g.lineTo(x, ridgeY(x, L, idx * 13.7));
+  g.lineTo(W, H + 8); g.closePath();
+  g.fillStyle = shade; g.fill();
+  g.beginPath();
+  for (let x = 0; x <= W + step; x += step) {
+    const y = ridgeY(x, L, idx * 13.7);
+    if (x === 0) g.moveTo(x, y); else g.lineTo(x, y);
+  }
+  g.strokeStyle = haze; g.globalAlpha = 0.10 + L.far * 0.14; g.lineWidth = 1.1; g.stroke();
+  g.globalAlpha = 1;
+
+  if (L.far < 0.45) {
+    for (let i = 0; i < L.trees; i++) {
+      const x = (i + 0.5) * (W / L.trees), y = ridgeY(x, L, idx * 13.7), rx = H * L.treeH * 1.15;
+      g.save(); g.translate(x - rx * 0.55, y + 6); g.scale(1, 0.16);
+      const sg = g.createRadialGradient(0, 0, 0, 0, 0, rx);
+      sg.addColorStop(0, 'rgba(30,10,8,0.34)'); sg.addColorStop(1, 'rgba(30,10,8,0)');
+      g.fillStyle = sg; g.beginPath(); g.arc(0, 0, rx, 0, TAU); g.fill(); g.restore();
+    }
+  }
+
+  const rnd = mulberry32(9000 + L.seed);
+  for (let i = 0; i < L.trees; i++) {
+    const x = (i + 0.12 + rnd() * 0.76) * (W / L.trees);
+    drawTree(g, x, ridgeY(x, L, idx * 13.7) + 3, H * L.treeH * (0.7 + rnd() * 0.75), treeCol, rnd);
+  }
+
+  if (L.far < 0.2) {
+    const litter = mulberry32(4400 + L.seed);
+    for (let i = 0; i < 340; i++) {
+      const x = litter() * W, y = H * (0.885 + litter() * 0.115), s = 0.8 + litter() * 2;
+      g.fillStyle = rgba(litter() < 0.5 ? '#c75b2a' : '#f2a65a', 0.08 + litter() * 0.2);
+      g.beginPath(); g.ellipse(x, y, s * 1.7, s * 0.8, litter() * TAU, 0, TAU); g.fill();
+    }
+  }
+  return { canvas: c, top: top };
+}
+
+function rebuildLayers() {
+  if (!W || !H) return;
+  const w = lightWeights();
+  const haze = blendColors([HAZE.golden, HAZE.noon, HAZE.dusk], w);
+  layers = [];
+  for (let i = 0; i < LAYERS.length; i++) layers.push(buildLayer(LAYERS[i], i, haze));
+  lightKeyCache = lightKey(w);
+}
+
+/* Leaves, wind and icon updrafts. */
+function buildLeaves() {
+  const area = clamp((W * H) / (1920 * 1080), 0.3, 1.5);
+  const total = Math.min(220, Math.round(P.leaves * area * (V.reduced ? 0.5 : 1)));
+  const per = Math.ceil(total / 3);
+  const rnd = mulberry32(7100 + total * 7);
+  leafRnd = mulberry32(3100 + total * 11);
+  leaves = [];
+  for (let d = 0; d < 3; d++) {
+    for (let i = 0; i < per && leaves.length < total; i++) {
+      leaves.push({
+        x: rnd() * W, y: rnd() * H, vx: 0, vy: 0, depth: d,
+        sp: 0.55 + d * 0.3 + rnd() * 0.35,
+        size: (d === 0 ? 9 : d === 1 ? 14 : 21) * (0.7 + rnd() * 0.7),
+        spr: (rnd() * 3) | 0, rot: rnd() * TAU, vr: (rnd() - 0.5) * 2.2, ph: rnd() * TAU,
+        alpha: d === 0 ? 0.48 : d === 1 ? 0.78 : 0.95,
+        settle: 0, landX: 0, landY: 0, landRot: 0,
+      });
+    }
+  }
+}
+
+function respawn(l) {
+  l.settle = 0;
+  l.x = leafRnd() * W;
+  l.y = -20 - leafRnd() * H * 0.15;
+  l.vx = 0; l.vy = 0; l.rot = leafRnd() * TAU;
+}
+
+function startSettle(l, x, y) {
+  l.settle = 2.2 + Math.random() * 3.2;
+  l.landX = x; l.landY = y;
+  l.landRot = l.rot + (Math.random() - 0.5) * 0.5;
+}
+
+function updateLeaves(dt, t) {
+  const wind = P.wind;
+  const gust = 0.55 + 0.45 * Math.sin(t * 0.31) + 0.22 * Math.sin(t * 0.77 + 1.7);
+  const icons = V.icons.list;
+  const k = 1 - Math.exp(-dt * 2.2);
+  for (let i = 0; i < leaves.length; i++) {
+    const l = leaves[i];
+    if (l.settle > 0) {
+      l.settle -= dt;
+      if (l.settle <= 0) respawn(l);
+      continue;
+    }
+    const depthF = 0.62 + l.depth * 0.34;
+    const curl = windNoise(l.x * 0.0016, l.y * 0.0013 + t * 0.09);
+    const curl2 = windNoise(l.x * 0.0016 + 41.3, l.y * 0.0013 - t * 0.07 + 9.1);
+    l.vx = lerp(l.vx, (gust * 34 + curl * 46) * wind * depthF, k);
+    l.vy = lerp(l.vy, (11 + l.depth * 12) * l.sp + curl2 * 22 * wind, k);
+    l.rot += l.vr * dt * (0.5 + wind * 0.7);
+    l.vx += Math.sin(t * 1.3 + l.ph) * 14 * dt;
+
+    for (let j = 0; j < icons.length; j++) {
+      const ic = icons[j];
+      if (ic.gone) continue;
+      const cx = ic.x + ic.w / 2, cy = ic.y + ic.h / 2;
+      const dx = l.x - cx, dy = l.y - cy, d = Math.hypot(dx, dy) || 1;
+      const R = ic.w * 1.15 + 52;
+      if (d < R) {
+        const f = 1 - d / R, spin = 120 * f * (0.35 + wind);
+        l.vx += (-dy / d) * spin * dt;
+        l.vy += (dx / d) * spin * dt;
+        l.vy -= 54 * f * (1 + 0.4 * Math.sin(t * 1.7 + l.ph)) * dt;
+        l.vx += (dx / d) * 14 * f * dt;
+        if (l.y > ic.y + ic.h * 0.62 && d < ic.w * 1.05 && Math.random() < dt * 0.5) {
+          startSettle(l, cx + (l.x - cx) * 0.85, ic.y + ic.h * 0.97 + Math.random() * 5);
+        }
+      }
+    }
+
+    l.x += l.vx * dt;
+    l.y += l.vy * dt;
+    if (l.x < -40) l.x = W + 30;
+    if (l.x > W + 40) l.x = -30;
+    if (l.y > H * 0.93 && Math.random() < dt * 0.5) startSettle(l, l.x, H * 0.945 + Math.random() * H * 0.045);
+    if (l.y > H + 60) respawn(l);
+  }
+}
+
+function drawLeaf(l, x, y, rot, squash, size, alpha) {
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate(rot); ctx.scale(1, squash);
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(leafSprites[l.spr], -size / 2, -size / 2, size, size);
+  ctx.restore();
+}
+
+function drawLeaves(t) {
+  for (let i = 0; i < leaves.length; i++) {
+    const l = leaves[i];
+    if (l.settle > 0) {
+      drawLeaf(l, l.landX, l.landY, l.landRot, 0.42, l.size * 0.9, l.alpha * clamp(l.settle / 0.7, 0, 1) * 0.9);
+    } else {
+      drawLeaf(l, l.x, l.y, l.rot, 0.4 + 0.6 * Math.abs(Math.sin(t * 1.8 + l.ph)), l.size, l.alpha);
+    }
+  }
+}
+
+/* Sky, haze, mist, icons and birds. */
+function drawSky(w) {
+  const stops = [0, 1, 2].map((i) => blendColors([SKY.golden[i], SKY.noon[i], SKY.dusk[i]], w));
+  V.bg(ctx, W, H, stops);
+  const sun = sunState(w);
+  const sunCol = blendColors([SUNCOL.golden, SUNCOL.noon, SUNCOL.dusk], w);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const g1 = ctx.createRadialGradient(sun.x, sun.y, 0, sun.x, sun.y, H * 0.62);
+  g1.addColorStop(0, rgba(sunCol, 0.48)); g1.addColorStop(0.16, rgba(sunCol, 0.17));
+  g1.addColorStop(0.5, rgba(sunCol, 0.05)); g1.addColorStop(1, rgba(sunCol, 0));
+  ctx.fillStyle = g1;
+  ctx.fillRect(sun.x - H * 0.62, sun.y - H * 0.62, H * 1.24, H * 1.24);
+  ctx.fillStyle = rgba(sunCol, 0.9);
+  ctx.beginPath(); ctx.arc(sun.x, sun.y, Math.max(11, H * 0.027), 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+function drawHorizonHaze(w) {
+  if (P.haze <= 0.01) return;
+  const haze = blendColors([HAZE.golden, HAZE.noon, HAZE.dusk], w);
+  const y0 = H * 0.40, y1 = H * 0.80;
+  const g = ctx.createLinearGradient(0, y0, 0, y1);
+  g.addColorStop(0, rgba(haze, 0)); g.addColorStop(0.55, rgba(haze, 0.2 * P.haze)); g.addColorStop(1, rgba(haze, 0.04 * P.haze));
+  ctx.fillStyle = g; ctx.fillRect(0, y0, W, y1 - y0);
+}
+
+function drawMist(t, yFrac, scale, speed, alpha) {
+  if (!mistTile || P.haze < 0.02) return;
+  const tw = mistTile.width * scale, th = mistTile.height * scale;
+  const off = (t * speed) % tw, y = H * yFrac - th / 2;
+  ctx.globalAlpha = alpha * P.haze;
+  for (let x = -off; x < W + tw; x += tw) ctx.drawImage(mistTile, x, y, tw, th);
+  ctx.globalAlpha = 1;
+}
+
+function drawIconShadows(t) {
+  const icons = V.icons.list;
+  for (let i = 0; i < icons.length; i++) {
+    const ic = icons[i];
+    const fade = ic.gone ? 1 - clamp((t - ic.gone) / 1.6, 0, 1) : 1;
+    if (fade <= 0) continue;
+    const appear = smoothstep(0, 1, 1 - ic.fresh);
+    const cx = ic.x + ic.w / 2, cy = ic.y + ic.h - 2;
+    const w = ic.w * (1.5 + 0.25 * appear), h = w * 0.34;
+    ctx.globalAlpha = fade * 0.85;
+    ctx.drawImage(shadowSprite, cx - w / 2, cy - h / 2, w, h);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawBirds(t) {
+  if (!P.birds) return;
+  const b = bird;
+  if (!b.active) {
+    if (t > b.next) {
+      b.active = true; b.t0 = t;
+      b.dir = Math.random() < 0.5 ? -1 : 1;
+      b.y = H * (0.15 + Math.random() * 0.22);
+      b.seed = (Math.random() * 1e9) | 0;
+    }
+    return;
+  }
+  const age = t - b.t0, dur = 22;
+  if (age > dur) { b.active = false; b.next = t + 22 + Math.random() * 36; return; }
+  const prog = age / dur;
+  const fade = smoothstep(0, 0.08, prog) * (1 - smoothstep(0.9, 1, prog));
+  const x = b.dir > 0 ? -140 + prog * (W + 280) : W + 140 - prog * (W + 280);
+  const y = b.y + Math.sin(prog * 5 + b.seed) * H * 0.02;
+  const s = clamp(H / 1080, 0.6, 1.6);
+  ctx.save();
+  ctx.globalAlpha = fade * 0.72;
+  ctx.strokeStyle = '#2a0f0a';
+  ctx.lineWidth = 1.8 * s;
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 7; i++) {
+    const rank = Math.ceil(i / 2), side = i === 0 ? 0 : i % 2 ? 1 : -1;
+    const bx = x + b.dir * (-rank * 27 * s);
+    const by = y + side * rank * 15 * s + Math.sin(t * 1.4 + i) * 2;
+    const flap = Math.sin(t * 7.5 + i * 1.7) * 3.4 * s;
+    ctx.beginPath();
+    ctx.moveTo(bx - 6 * s, by + flap);
+    ctx.quadraticCurveTo(bx, by - 3 * s - flap, bx + 6 * s, by + flap);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* Layout and frame. */
+leafSprites = [makeLeafSprite(0), makeLeafSprite(1), makeLeafSprite(2)];
+makeMistTile();
+makeShadowSprite();
+
+function rebuild() {
+  W = view.w; H = view.h;
+  if (!W || !H) return;
+  rebuildLayers();
+  buildLeaves();
+  bird.active = false;
+}
+
+view.onResize(rebuild);
+rebuild();
+
+V.loop((dt, t) => {
+  const w = lightWeights();
+  if (lightKey(w) !== lightKeyCache) rebuildLayers();
+  drawSky(w);
+  drawBirds(t);
+  if (layers[0]) ctx.drawImage(layers[0].canvas, 0, layers[0].top);
+  drawHorizonHaze(w);
+  drawMist(t, 0.60, 1.15, 5, 0.55);
+  if (layers[1]) ctx.drawImage(layers[1].canvas, 0, layers[1].top);
+  drawMist(t, 0.70, 1.7, 9, 0.42);
+  if (layers[2]) ctx.drawImage(layers[2].canvas, 0, layers[2].top);
+  if (layers[3]) ctx.drawImage(layers[3].canvas, 0, layers[3].top);
+  drawIconShadows(t);
+  updateLeaves(dt, t);
+  drawLeaves(t);
+  V.vignette(ctx, W, H, 0.44);
+  V.grain(ctx, W, H, 0.05);
+});
+</script>
+</body>
+</html>

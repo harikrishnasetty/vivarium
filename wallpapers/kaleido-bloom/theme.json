@@ -1,0 +1,16 @@
+{
+  "id": "kaleido-bloom",
+  "name": "Kaleido Bloom",
+  "category": "Generative",
+  "tagline": "A slow kaleidoscope that flowers around your desktop.",
+  "desc": "Mirrored petals unfold under a rotating kaleidoscope, glowing additively as colours drift. Every desktop icon grows its own bloom, sized to the tile and phased by its seed, while ambient blossoms wander the dark.",
+  "tags": ["generative", "kaleidoscope", "flowers", "glow", "adaptive"],
+  "thumb": { "from": "#0b0718", "to": "#a8436b", "accent": "#ffc98a" },
+  "params": [
+    { "group": "Form", "key": "symmetry", "label": "Symmetry", "type": "select", "options": [["6", "6-fold"], ["8", "8-fold"], ["12", "12-fold"]], "default": "8" },
+    { "group": "Form", "key": "blooms", "label": "Ambient blooms", "type": "range", "min": 0, "max": 8, "step": 1, "default": 3 },
+    { "group": "Motion", "key": "speed", "label": "Rotation", "type": "range", "min": 0, "max": 2, "step": 0.1, "default": 0.7 },
+    { "group": "Light", "key": "glow", "label": "Glow", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.7 },
+    { "group": "Light", "key": "palette", "label": "Palette", "type": "select", "options": [["dusk", "Dusk"], ["aurora", "Aurora"], ["candy", "Candy"]], "default": "dusk" }
+  ]
+}

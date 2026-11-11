@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rain City — Vivarium</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #08060f; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script type="module">
+import { Vivarium, TAU, clamp, mulberry32, hexToRgb, rgba } from '../_runtime/engine.js';
+
+const V = await Vivarium.ready;
+const view = V.canvas('stage'), ctx = view.ctx;
+
+/* params */
+const DEFAULTS = { rain: 0.7, lightning: 0.35, skyline: 0.6, traffic: true, neon: 'magenta' };
+let P = Object.assign({}, DEFAULTS, V.params);
+V.on('params', (p) => {
+  const prev = P; P = Object.assign({}, P, p);
+  if (prev.rain !== P.rain) buildRain();
+  if (prev.skyline !== P.skyline || prev.neon !== P.neon) buildSkyline();
+  if (prev.neon !== P.neon) towerCache.clear();
+});
+const NEON = { cyan: '#4fd8e8', magenta: '#d64fa3', amber: '#ffb45c' };
+const neonHex = () => NEON[P.neon] || NEON.magenta;
+
+let W = 0, H = 0, groundY = 0;
+let farSky = null, nearSky = null, stars = [], rain = [], splashes = [], cars = [];
+let flash = 0, bolt = null, nextBolt = 5;
+const towerCache = new Map(), glowCache = new Map();
+const streakFar = makeStreak(24, 0.22), streakMid = makeStreak(42, 0.30), streakNear = makeStreak(70, 0.40);
+const streakSprites = [streakFar, streakMid, streakNear];
+
+/* sprites */
+function makeStreak(len, alpha) {
+  const slant = 0.26, w = Math.ceil(len * slant) + 4;
+  const c = document.createElement('canvas'); c.width = w; c.height = len + 4;
+  const g = c.getContext('2d');
+  const gr = g.createLinearGradient(0, 0, 0, len);
+  gr.addColorStop(0, 'rgba(150,205,235,0)');
+  gr.addColorStop(0.55, 'rgba(170,220,245,' + alpha * 0.55 + ')');
+  gr.addColorStop(1, 'rgba(215,245,255,' + alpha + ')');
+  g.strokeStyle = gr; g.lineWidth = 1.15; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(w - 2, 2); g.lineTo(2, len + 2); g.stroke();
+  return c;
+}
+function glowFor(hex) {
+  let c = glowCache.get(hex);
+  if (c) return c;
+  c = document.createElement('canvas'); c.width = 96; c.height = 96;
+  const g = c.getContext('2d'), rgb = hexToRgb(hex);
+  const gr = g.createRadialGradient(48, 48, 0, 48, 48, 48);
+  gr.addColorStop(0, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.9)');
+  gr.addColorStop(0.35, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.32)');
+  gr.addColorStop(1, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 96, 96); glowCache.set(hex, c); return c;
+}
+
+/* skyline */
+function makeSkyline(seed, baseY, minH, maxH, topColor, botColor, winAlpha, winW, winH) {
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d'), r = mulberry32(seed), neon = neonHex();
+  let x = -30;
+  while (x < W + 30) {
+    const bw = 26 + r() * 86, bh = minH + r() * (maxH - minH), top = baseY - bh;
+    const grad = g.createLinearGradient(0, top, 0, baseY);
+    grad.addColorStop(0, topColor); grad.addColorStop(1, botColor);
+    g.fillStyle = grad; g.fillRect(x, top, bw, bh);
+    if (r() < 0.42) {
+      const ax = x + bw * (0.2 + r() * 0.6);
+      g.fillStyle = botColor; g.fillRect(ax, top - 8 - r() * 16, 1.6, 24);
+    }
+    if (r() < 0.3) { g.fillStyle = 'rgba(255,255,255,0.05)'; g.fillRect(x + bw * 0.2, top, bw * 0.6, 1.2); }
+    for (let wy = top + 8; wy < baseY - 8; wy += 9) for (let wx = x + 4; wx < x + bw - 4; wx += 8) {
+      if (r() < winAlpha) {
+        const warm = r() < 0.58, a = 0.25 + r() * 0.5;
+        g.fillStyle = warm ? 'rgba(255,206,150,' + a + ')' : (r() < 0.35 ? rgba(neon, a * 0.8) : 'rgba(140,200,230,' + a * 0.7 + ')');
+        g.fillRect(wx, wy, winW, winH);
+      }
+    }
+    x += bw + 3 + r() * 12;
+  }
+  return c;
+}
+function buildSkyline() {
+  if (!W || !H) return;
+  const dens = 0.5 + P.skyline * 0.8;
+  farSky = makeSkyline(8123, groundY + 2, H * 0.16 * dens, H * 0.36 * dens, '#1a0f2e', '#120a20', 0.30, 2, 3);
+  nearSky = makeSkyline(4477, groundY + 4, H * 0.10 * dens, H * 0.24 * dens, '#0d0819', '#07050e', 0.36, 2.4, 4);
+  const r = mulberry32(9901); stars = [];
+  for (let i = 0; i < 46; i++) stars.push({
+    x: r() * W, y: r() * groundY * 0.6, a: 0.12 + r() * 0.35, ph: r() * TAU, sp: 0.5 + r() * 1.4,
+  });
+}
+
+/* rain, splashes, traffic */
+function buildRain() {
+  const area = Math.max(1, W * H);
+  const base = Math.min(460, Math.round((area / 12000) * P.rain * 1.3));
+  const n = Math.round(base * (V.reduced ? 0.55 : 1)), r = mulberry32(6503 + n * 7);
+  rain = [];
+  for (let i = 0; i < n; i++) {
+    const layer = r() < 0.4 ? 0 : r() < 0.62 ? 1 : 2;
+    const sp = layer === 0 ? 360 + r() * 180 : layer === 1 ? 560 + r() * 240 : 820 + r() * 340;
+    rain.push({ x: r() * W, y: r() * H, layer: layer, sp: sp, len: 0.7 + r() * 0.7, a: 0.35 + r() * 0.65 });
+  }
+  splashes = []; cars = [];
+  const cr = mulberry32(3301);
+  for (let i = 0; i < 8; i++) cars.push({
+    x: cr() * W, y: groundY + 8 + cr() * Math.max(6, H - groundY - 16),
+    sp: 70 + cr() * 150, dir: cr() < 0.5 ? -1 : 1, len: 50 + cr() * 90, warm: cr() < 0.5, ph: cr() * TAU,
+  });
+}
+function updateRain(dt) {
+  const wind = 0.26;
+  for (let i = 0; i < rain.length; i++) {
+    const d = rain[i];
+    d.y += d.sp * dt; d.x += d.sp * wind * dt;
+    if (d.y > groundY + 12) {
+      if (d.layer === 2 && Math.random() < 0.35 * P.rain && splashes.length < 70) {
+        splashes.push({ x: d.x, y: groundY + 4 + Math.random() * (H - groundY - 6), age: 0, life: 0.45 + Math.random() * 0.3 });
+      }
+      d.y = -20 - Math.random() * H * 0.3; d.x = Math.random() * W - W * 0.2;
+    }
+    if (d.x > W + 20) d.x = -20;
+  }
+}
+function drawRainLayer(layer) {
+  const sprite = streakSprites[layer];
+  for (let i = 0; i < rain.length; i++) {
+    const d = rain[i];
+    if (d.layer !== layer) continue;
+    ctx.globalAlpha = d.a * (layer === 0 ? 0.5 : layer === 1 ? 0.8 : 1);
+    ctx.drawImage(sprite, d.x, d.y - sprite.height * d.len, sprite.width * d.len, sprite.height * d.len);
+  }
+  ctx.globalAlpha = 1;
+}
+function drawSplashes(dt) {
+  for (let i = splashes.length - 1; i >= 0; i--) {
+    const s = splashes[i]; s.age += dt;
+    if (s.age > s.life) { splashes.splice(i, 1); continue; }
+    const p = s.age / s.life, r = 2 + p * 7;
+    ctx.globalAlpha = (1 - p) * 0.32; ctx.strokeStyle = '#b9e6f5'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.ellipse(s.x, s.y, r, r * 0.28, 0, 0, TAU); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+function drawCars(t, dt) {
+  if (!P.traffic) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < cars.length; i++) {
+    const c = cars[i]; c.x += c.sp * c.dir * dt;
+    if (c.x < -160) c.x = W + 160; if (c.x > W + 160) c.x = -160;
+    const col = c.warm ? '#ffd9a3' : '#ff6b8a', x2 = c.x - c.dir * c.len;
+    const g = ctx.createLinearGradient(c.x, 0, x2, 0);
+    g.addColorStop(0, rgba(col, 0.55)); g.addColorStop(0.4, rgba(col, 0.16)); g.addColorStop(1, rgba(col, 0));
+    ctx.strokeStyle = g; ctx.lineWidth = 1.8;
+    ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(x2, c.y); ctx.stroke();
+    ctx.globalAlpha = 0.5 + 0.3 * Math.sin(t * 2 + c.ph);
+    ctx.drawImage(glowFor(col), c.x - 11, c.y - 11, 22, 22); ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+
+/* towers from icons */
+function makeWindowTile(seed, neon) {
+  const c = document.createElement('canvas'); c.width = 96; c.height = 96;
+  const g = c.getContext('2d'), r = mulberry32(seed);
+  for (let row = 0; row < 6; row++) for (let col = 0; col < 6; col++) {
+    const x = 6 + col * 15, y = 6 + row * 15;
+    if (r() < 0.54) {
+      const warm = r() < 0.6, a = 0.4 + r() * 0.55;
+      g.fillStyle = warm ? 'rgba(255,205,145,' + a + ')' : rgba(neon, a * 0.9);
+    } else g.fillStyle = 'rgba(22,14,42,0.9)';
+    g.fillRect(x, y, 9, 7);
+  }
+  return c;
+}
+function towerFor(ic) {
+  let e = towerCache.get(ic.id);
+  if (e) return e;
+  if (towerCache.size > 64) towerCache.clear();
+  const seed = (ic.seed ^ 0x51ed270b) >>> 0, tile = makeWindowTile(seed, neonHex());
+  const r = mulberry32(seed ^ 0x2f1b3c);
+  e = {
+    pattern: ctx.createPattern(tile, 'repeat'),
+    flick: [
+      { col: Math.floor(r() * 6), row: r(), ph: r() * TAU },
+      { col: Math.floor(r() * 6), row: r(), ph: r() * TAU },
+      { col: Math.floor(r() * 6), row: r(), ph: r() * TAU },
+    ],
+    antenna: 16 + r() * 26,
+  };
+  towerCache.set(ic.id, e); return e;
+}
+function drawTowers(t) {
+  const icons = V.icons.list, neon = neonHex();
+  for (let i = 0; i < icons.length; i++) {
+    const ic = icons[i];
+    const fade = ic.gone ? 1 - clamp((V.icons._clock - ic.gone) / 1.6, 0, 1) : 1;
+    if (fade <= 0.01) continue;
+    const cx = ic.x + ic.w / 2, tw = clamp(ic.w * 1.5, 58, 150);
+    const top = clamp(ic.y + ic.h * 0.55, H * 0.04, groundY - 80), th = groundY - top;
+    if (th < 20) continue;
+    const e = towerFor(ic);
+
+    ctx.save(); ctx.globalAlpha = 0.15 * fade;
+    const refG = ctx.createLinearGradient(0, groundY, 0, H);
+    refG.addColorStop(0, '#150e26'); refG.addColorStop(1, 'rgba(8,6,15,0)');
+    ctx.fillStyle = refG; ctx.fillRect(cx - tw / 2, groundY, tw, H - groundY);
+    ctx.globalAlpha = 0.10 * fade;
+    for (let k = 0; k < 4; k++) {
+      ctx.fillStyle = k % 2 ? rgba(neon, 0.5) : 'rgba(255,205,145,0.45)';
+      ctx.fillRect(cx - tw / 2 + 6 + (k * 23) % Math.max(10, tw - 20), groundY + 6 + k * 7, 10 + (k * 7) % 24, 1.4);
+    }
+    ctx.restore();
+
+    ctx.save(); ctx.globalAlpha = fade; ctx.translate(cx - tw / 2, top);
+    const body = ctx.createLinearGradient(0, 0, 0, th);
+    body.addColorStop(0, '#160e28'); body.addColorStop(0.5, '#0d0818'); body.addColorStop(1, '#07050d');
+    ctx.fillStyle = body; ctx.fillRect(0, 0, tw, th);
+    ctx.fillStyle = rgba(neon, 0.18); ctx.fillRect(0, 0, 1.5, th); ctx.fillRect(tw - 1.5, 0, 1.5, th);
+    ctx.globalAlpha = 0.72 * fade; ctx.fillStyle = e.pattern; ctx.fillRect(0, 0, tw, th);
+    ctx.globalAlpha = fade; ctx.fillStyle = rgba(neon, 0.35); ctx.fillRect(0, 0, tw, 1.4);
+    for (let k = 0; k < e.flick.length; k++) {
+      const f = e.flick[k];
+      if (Math.sin(t * 2.4 + f.ph) > 0.35) {
+        ctx.fillStyle = k % 2 ? rgba(neon, 0.75) : 'rgba(255,214,160,0.8)';
+        ctx.fillRect(6 + f.col * 15, 14 + f.row * (th - 34), 9, 7);
+      }
+    }
+    const ax = tw * (0.72 + (e.antenna % 10) / 40);
+    ctx.strokeStyle = 'rgba(120,100,150,0.55)'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(ax, 1); ctx.lineTo(ax, -e.antenna); ctx.stroke();
+    const blink = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * 3.1 + e.antenna));
+    ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = blink * 0.7 * fade;
+    ctx.drawImage(glowFor('#ff5b6e'), ax - 7, -e.antenna - 7, 14, 14);
+    ctx.restore();
+
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = (0.16 + P.skyline * 0.12) * fade;
+    const gs = tw * 3.4;
+    ctx.drawImage(glowFor(neon), cx - gs / 2, groundY - gs * 0.17, gs, gs * 0.34);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* lightning */
+function makeBolt() {
+  const pts = []; let x = W * (0.12 + Math.random() * 0.76), y = H * 0.03;
+  pts.push({ x: x, y: y });
+  while (y < groundY - H * 0.06) { y += 22 + Math.random() * 42; x += (Math.random() - 0.5) * 54; pts.push({ x: x, y: y }); }
+  const branch = [];
+  if (pts.length > 3) {
+    const b = pts[Math.floor(pts.length * 0.35)];
+    let bx = b.x, by = b.y; branch.push({ x: bx, y: by });
+    for (let k = 0; k < 4; k++) { bx += (Math.random() - 0.5) * 60 + 12; by += 26 + Math.random() * 34; branch.push({ x: bx, y: by }); }
+  }
+  return { pts: pts, branch: branch };
+}
+function updateLightning(dt, t) {
+  if (P.lightning > 0.01 && t > nextBolt) {
+    bolt = makeBolt(); flash = 0.55 + P.lightning * 0.55;
+    nextBolt = t + 5 + Math.random() * 10 + (1 - P.lightning) * 26;
+  }
+  flash = Math.max(0, flash - dt * 3.6);
+}
+function drawLightning() {
+  if (flash <= 0.01) return;
+  const neon = neonHex();
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = Math.min(0.22, flash * 0.16); ctx.fillStyle = '#c9d8ff'; ctx.fillRect(0, 0, W, groundY);
+  if (bolt && flash > 0.16) {
+    ctx.globalAlpha = Math.min(1, flash * 1.2);
+    const paths = [bolt.pts, bolt.branch];
+    for (let p = 0; p < paths.length; p++) {
+      const pts = paths[p];
+      if (pts.length < 2) continue;
+      ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.strokeStyle = rgba(neon, 0.18); ctx.lineWidth = 7; ctx.stroke();
+      ctx.strokeStyle = 'rgba(235,245,255,0.9)'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    ctx.globalAlpha = Math.min(0.7, flash);
+    ctx.drawImage(glowFor('#dbe8ff'), bolt.pts[0].x - 60, bolt.pts[0].y - 60, 120, 120);
+  }
+  ctx.restore();
+}
+
+/* layout + frame */
+function rebuild() {
+  W = view.w; H = view.h; groundY = H * 0.90;
+  buildSkyline(); buildRain();
+}
+view.onResize(rebuild); rebuild();
+
+V.loop((dt, t) => {
+  V.bg(ctx, W, H, ['#08060f', '#0c0719', '#1a0f2e']);
+  for (let i = 0; i < stars.length; i++) {
+    const s = stars[i];
+    ctx.globalAlpha = s.a * (0.5 + 0.5 * Math.sin(t * s.sp + s.ph));
+    ctx.fillStyle = '#b9c7e8'; ctx.fillRect(s.x, s.y, 1.2, 1.2);
+  }
+  ctx.globalAlpha = 1;
+
+  const neon = neonHex();
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const hz = ctx.createRadialGradient(W * 0.5, groundY, 0, W * 0.5, groundY, W * 0.62);
+  hz.addColorStop(0, rgba(neon, 0.13 + P.skyline * 0.08));
+  hz.addColorStop(0.5, rgba(neon, 0.05)); hz.addColorStop(1, rgba(neon, 0));
+  ctx.fillStyle = hz; ctx.fillRect(0, 0, W, groundY);
+  ctx.restore();
+
+  if (farSky) ctx.drawImage(farSky, 3 + Math.sin(t * 0.02) * 3, 0, W, H);
+  updateRain(dt); drawRainLayer(0);
+  if (nearSky) ctx.drawImage(nearSky, 2 + Math.sin(t * 0.016 + 2.1) * 2, 0, W, H);
+
+  const ground = ctx.createLinearGradient(0, groundY, 0, H);
+  ground.addColorStop(0, '#1d1132'); ground.addColorStop(0.35, '#0c0718'); ground.addColorStop(1, '#05040a');
+  ctx.fillStyle = ground; ctx.fillRect(0, groundY, W, H - groundY);
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const sheen = ctx.createLinearGradient(0, groundY, 0, groundY + H * 0.05);
+  sheen.addColorStop(0, rgba(neon, 0.20)); sheen.addColorStop(1, rgba(neon, 0));
+  ctx.fillStyle = sheen; ctx.fillRect(0, groundY, W, H * 0.05);
+  ctx.restore();
+
+  drawTowers(t); drawCars(t, dt);
+  drawRainLayer(1); drawRainLayer(2); drawSplashes(dt);
+
+  const fog = ctx.createLinearGradient(0, groundY - H * 0.14, 0, groundY + H * 0.03);
+  fog.addColorStop(0, 'rgba(92,42,138,0)'); fog.addColorStop(0.65, 'rgba(92,42,138,0.12)');
+  fog.addColorStop(1, 'rgba(8,6,15,0)');
+  ctx.fillStyle = fog; ctx.fillRect(0, groundY - H * 0.14, W, H * 0.18);
+
+  updateLightning(dt, t); drawLightning();
+  V.vignette(ctx, W, H, 0.55); V.grain(ctx, W, H, 0.055);
+});
+</script>
+</body>
+</html>

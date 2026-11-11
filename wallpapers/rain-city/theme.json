@@ -1,0 +1,16 @@
+{
+  "id": "rain-city",
+  "name": "Rain City",
+  "category": "Landscapes",
+  "tagline": "Neon rain over a skyline built from your icons.",
+  "desc": "A procedural night skyline behind falling rain, with each desktop icon becoming a lit foreground tower with wet-ground reflections. Lightning, fog and passing car streaks keep the city moving.",
+  "tags": ["adaptive", "city", "night", "rain", "neon"],
+  "thumb": { "from": "#08060f", "to": "#5c2a8a", "accent": "#d64fa3" },
+  "params": [
+    { "group": "Weather", "key": "rain", "label": "Rain", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.7 },
+    { "group": "Weather", "key": "lightning", "label": "Lightning", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.35 },
+    { "group": "City", "key": "skyline", "label": "Skyline density", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.6 },
+    { "group": "City", "key": "traffic", "label": "Passing traffic", "type": "toggle", "default": true },
+    { "group": "City", "key": "neon", "label": "Neon accent", "type": "select", "options": [["cyan", "Cyan"], ["magenta", "Magenta"], ["amber", "Amber"]], "default": "magenta" }
+  ]
+}

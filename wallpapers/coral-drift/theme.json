@@ -1,0 +1,16 @@
+{
+  "id": "coral-drift",
+  "name": "Coral Drift",
+  "category": "Landscapes",
+  "tagline": "A living reef that swirls around your icons.",
+  "desc": "Sunbeams and caustics play over a sandy floor while a boid school of fish threads between coral heads grown from your desktop icons. Bubbles, plankton and jellyfish keep the water alive.",
+  "tags": ["adaptive", "ocean", "reef", "fish", "underwater"],
+  "thumb": { "from": "#03242b", "to": "#117d78", "accent": "#3fc0a0" },
+  "params": [
+    { "group": "Life", "key": "fish", "label": "Fish school", "type": "range", "min": 0, "max": 80, "step": 2, "default": 34 },
+    { "group": "Life", "key": "bubbles", "label": "Bubbles", "type": "range", "min": 0, "max": 60, "step": 2, "default": 24 },
+    { "group": "Reef", "key": "coral", "label": "Coral growth", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.7 },
+    { "group": "Light", "key": "rays", "label": "Sunbeams", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.6 },
+    { "group": "Light", "key": "caustics", "label": "Caustics", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.5 }
+  ]
+}

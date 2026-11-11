@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vivarium — wallpaper preview</title>
+<style>
+  :root {
+    --bg: #0b0f10;
+    --panel: #11181a;
+    --line: rgba(255,255,255,.08);
+    --text: #dfe9e4;
+    --muted: #8aa39a;
+    --accent: #6ee7b7;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif; }
+  body { display: flex; }
+  aside {
+    width: 320px; flex: 0 0 320px; height: 100%; overflow-y: auto;
+    background: var(--panel); border-right: 1px solid var(--line); padding: 18px;
+  }
+  body.no-chrome aside { display: none; }
+  body.no-chrome main { width: 100%; }
+  h1 { font-size: 15px; letter-spacing: .12em; text-transform: uppercase; margin: 0 0 4px; color: var(--accent); }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  select {
+    width: 100%; background: #0d1315; color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px; font-size: 13px; margin-bottom: 16px;
+  }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0; font-size: 13px; }
+  .row label { color: var(--muted); }
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+  .group { margin: 16px 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: #5f7a70; }
+  .param { margin-bottom: 12px; }
+  .param .top { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+  .param .top span:last-child { color: var(--accent); font-variant-numeric: tabular-nums; }
+  button {
+    width: 100%; margin-top: 8px; padding: 9px; border-radius: 8px; cursor: pointer;
+    background: rgba(110,231,183,.12); color: var(--accent); border: 1px solid rgba(110,231,183,.3);
+    font-size: 13px;
+  }
+  main { flex: 1; position: relative; background: #000; }
+  iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .hint { font-size: 11px; color: #5f7a70; margin-top: 14px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<aside>
+  <h1>Vivarium</h1>
+  <div class="sub">wallpaper preview harness</div>
+  <select id="theme"></select>
+  <div id="params"></div>
+  <div class="group">Preview</div>
+  <div class="row"><label for="icons">Sample desktop icons</label><input id="icons" type="checkbox" checked></div>
+  <div class="row"><label for="fps">Target FPS</label>
+    <select id="fps" style="width:auto;margin:0">
+      <option value="15">15</option><option value="30" selected>30</option><option value="60">60</option>
+    </select>
+  </div>
+  <button id="raw">Open wallpaper raw ↗</button>
+  <div class="hint">This harness is for development only. The real app feeds live icon positions and saved settings through the Windows host.</div>
+</aside>
+<main><iframe id="stage" title="wallpaper preview"></iframe></main>
+<script type="module">
+  const q = new URLSearchParams(location.search);
+  if (q.get('chrome') === '0') document.body.classList.add('no-chrome');
+
+  const themeSel = document.getElementById('theme');
+  const paramsEl = document.getElementById('params');
+  const frame = document.getElementById('stage');
+  const iconsBox = document.getElementById('icons');
+  const fpsSel = document.getElementById('fps');
+
+  let themes = [];
+  let current = q.get('theme') || '';
+  let values = {};
+
+  const frameUrl = (id) => {
+    const params = new URLSearchParams({ preview: '1', icons: iconsBox.checked ? '1' : '0', fps: fpsSel.value });
+    return '/wallpapers/' + encodeURIComponent(id) + '/index.html?' + params.toString();
+  };
+
+  function postParams() {
+    frame.contentWindow?.postMessage({ t: 'params', params: values }, '*');
+  }
+
+  function buildParams(theme) {
+    paramsEl.innerHTML = '';
+    values = {};
+    const defaults = {};
+    for (const p of theme.params || []) if (p.key) defaults[p.key] = p.default;
+    Object.assign(values, defaults);
+    const groups = new Map();
+    for (const p of theme.params || []) {
+      const g = p.group || 'Settings';
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(p);
+    }
+    for (const [group, list] of groups) {
+      const h = document.createElement('div');
+      h.className = 'group';
+      h.textContent = group;
+      paramsEl.appendChild(h);
+      for (const p of list) {
+        const wrap = document.createElement('div');
+        wrap.className = 'param';
+        if (p.type === 'toggle') {
+          wrap.innerHTML = '<div class="row"><label>' + p.label + '</label><input type="checkbox"></div>';
+          const box = wrap.querySelector('input');
+          box.checked = !!p.default;
+          values[p.key] = box.checked;
+          box.addEventListener('change', () => { values[p.key] = box.checked; postParams(); });
+        } else if (p.type === 'select') {
+          wrap.innerHTML = '<div class="top"><span>' + p.label + '</span></div>';
+          const sel = document.createElement('select');
+          for (const [val, label] of p.options || []) {
+            const o = document.createElement('option');
+            o.value = val; o.textContent = label;
+            sel.appendChild(o);
+          }
+          sel.value = p.default;
+          values[p.key] = p.default;
+          sel.addEventListener('change', () => { values[p.key] = sel.value; postParams(); });
+          wrap.appendChild(sel);
+        } else {
+          const val = Number(p.default ?? p.min ?? 0);
+          wrap.innerHTML = '<div class="top"><span>' + p.label + '</span><span></span></div><input type="range">';
+          const out = wrap.querySelector('.top span:last-child');
+          const range = wrap.querySelector('input');
+          range.min = p.min; range.max = p.max; range.step = p.step || 1; range.value = val;
+          out.textContent = val;
+          values[p.key] = val;
+          range.addEventListener('input', () => {
+            const v = Number(range.value);
+            values[p.key] = v;
+            out.textContent = v;
+            postParams();
+          });
+        }
+        paramsEl.appendChild(wrap);
+      }
+    }
+  }
+
+  function loadTheme(id) {
+    const theme = themes.find((t) => t.id === id) || themes[0];
+    if (!theme) return;
+    current = theme.id;
+    themeSel.value = theme.id;
+    buildParams(theme);
+    frame.src = frameUrl(theme.id);
+    history.replaceState(null, '', '?theme=' + encodeURIComponent(theme.id));
+  }
+
+  frame.addEventListener('load', postParams);
+
+  themeSel.addEventListener('change', () => loadTheme(themeSel.value));
+  iconsBox.addEventListener('change', () => { frame.src = frameUrl(current); });
+  fpsSel.addEventListener('change', () => { frame.src = frameUrl(current); });
+  document.getElementById('raw').addEventListener('click', () => {
+    window.open(frameUrl(current), '_blank');
+  });
+
+  try {
+    const res = await fetch('/api/themes');
+    themes = await res.json();
+    for (const t of themes) {
+      const o = document.createElement('option');
+      o.value = t.id;
+      o.textContent = t.name + ' — ' + t.category;
+      themeSel.appendChild(o);
+    }
+    if (themes.length) loadTheme(current || themes[0].id);
+  } catch {
+    paramsEl.innerHTML = '<div class="hint">Run this page from <code>node tools/dev-server.mjs</code>.</div>';
+  }
+</script>
+</body>
+</html>

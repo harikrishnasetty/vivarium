@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flow Field — Vivarium</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #04131c; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script type="module">
+import {
+  Vivarium, TAU, clamp, makeNoise2D, fbm, mulberry32, hexToRgb,
+} from '../_runtime/engine.js';
+
+const V = await Vivarium.ready;
+const view = V.canvas('stage');
+const ctx = view.ctx;
+
+/* ------------------------------------------------------------------ */
+/* Parameters                                                         */
+/* ------------------------------------------------------------------ */
+const DEFAULTS = { density: 0.6, speed: 1, trail: 0.06, swirl: 0.4, palette: 'aurora' };
+let P = Object.assign({}, DEFAULTS, V.params);
+V.on('params', (p) => {
+  const prev = P;
+  P = Object.assign({}, P, p);
+  if (prev.density !== P.density) buildParticles();
+  if (prev.palette !== P.palette) {
+    buildPalette();
+    buildBackground();
+    paintBase();
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Palette + field                                                    */
+/* ------------------------------------------------------------------ */
+const PALETTES = {
+  aurora: { base: '#04131c', deep: '#082433', colors: ['#0d4a55', '#1f8f83', '#49d6ae', '#b6ffe4', '#e8fff8'] },
+  ember: { base: '#160705', deep: '#33120c', colors: ['#7a2a17', '#c14f22', '#ee8a3c', '#ffc27a', '#fff0cf'] },
+  ocean: { base: '#02101d', deep: '#062436', colors: ['#0a4a63', '#157e8c', '#38b7b0', '#8fe6dc', '#e0fff8'] },
+};
+
+const flowA = makeNoise2D(1301);
+const flowB = makeNoise2D(2917);
+const rng = mulberry32(9107);
+const BUCKETS = 14;
+const MAX_SHADES = 72;
+
+let W = 0;
+let H = 0;
+let n = 0;
+let px = new Float32Array(0);
+let py = new Float32Array(0);
+let ppx = new Float32Array(0);
+let ppy = new Float32Array(0);
+let pa = new Float32Array(0);
+let psp = new Float32Array(0);
+let ptone = new Uint8Array(0);
+let pbidx = new Uint8Array(0);
+let shades = [];
+let bgLayer = null;
+
+function mixColor(a, b, t) {
+  const A = hexToRgb(a);
+  const B = hexToRgb(b);
+  return 'rgb(' + Math.round(A.r + (B.r - A.r) * t) + ',' +
+    Math.round(A.g + (B.g - A.g) * t) + ',' +
+    Math.round(A.b + (B.b - A.b) * t) + ')';
+}
+
+function buildPalette() {
+  const pal = PALETTES[P.palette] || PALETTES.aurora;
+  const cols = pal.colors;
+  shades = [];
+  for (let i = 0; i < MAX_SHADES; i++) {
+    const u = (i / (MAX_SHADES - 1)) * (cols.length - 1);
+    const k = Math.min(cols.length - 2, Math.floor(u));
+    shades.push(mixColor(cols[k], cols[k + 1], u - k));
+  }
+}
+
+function buildBackground() {
+  if (!W || !H) return;
+  const pal = PALETTES[P.palette] || PALETTES.aurora;
+  bgLayer = document.createElement('canvas');
+  bgLayer.width = W;
+  bgLayer.height = H;
+  const g = bgLayer.getContext('2d');
+  V.bg(g, W, H, [pal.base, pal.deep, pal.base]);
+  const glow = g.createRadialGradient(W * 0.6, H * 0.4, 0, W * 0.6, H * 0.4, Math.max(W, H) * 0.75);
+  glow.addColorStop(0, 'rgba(255,255,255,0.045)');
+  glow.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = glow;
+  g.fillRect(0, 0, W, H);
+}
+
+function paintBase() {
+  if (!bgLayer) return;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.drawImage(bgLayer, 0, 0, W, H);
+}
+
+/* ------------------------------------------------------------------ */
+/* Particles (typed arrays, rebuilt on resize / density change)       */
+/* ------------------------------------------------------------------ */
+function spawn(i) {
+  const p = V.icons.avoid(rng() * W, rng() * H, 22, 0.9);
+  const x = clamp(p.x, 0, W);
+  const y = clamp(p.y, 0, H);
+  px[i] = x;
+  py[i] = y;
+  ppx[i] = x;
+  ppy[i] = y;
+  pa[i] = rng() * TAU;
+  psp[i] = 0.65 + rng() * 0.95;
+  ptone[i] = (rng() * 255) | 0;
+}
+
+function buildParticles() {
+  if (!W || !H) return;
+  const area = W * H;
+  const cap = clamp(Math.round((area / 2073600) * 2800), 700, 2800);
+  const limit = V.reduced ? Math.min(cap, 1200) : cap;
+  n = Math.max(0, Math.round(P.density * limit));
+  px = new Float32Array(n);
+  py = new Float32Array(n);
+  ppx = new Float32Array(n);
+  ppy = new Float32Array(n);
+  pa = new Float32Array(n);
+  psp = new Float32Array(n);
+  ptone = new Uint8Array(n);
+  pbidx = new Uint8Array(n);
+  for (let i = 0; i < n; i++) spawn(i);
+}
+
+/* ------------------------------------------------------------------ */
+/* Layout                                                             */
+/* ------------------------------------------------------------------ */
+function rebuild() {
+  W = view.w;
+  H = view.h;
+  buildPalette();
+  buildBackground();
+  buildParticles();
+  paintBase();
+}
+
+view.onResize(rebuild);
+rebuild();
+
+/* ------------------------------------------------------------------ */
+/* Frame                                                              */
+/* ------------------------------------------------------------------ */
+V.loop((dt, t) => {
+  if (!bgLayer) return;
+
+  /* fade the previous frame toward the palette base -> silk trails */
+  const trail = clamp(P.trail, 0.02, 0.2);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = trail;
+  ctx.drawImage(bgLayer, 0, 0, W, H);
+  ctx.globalAlpha = 1;
+
+  if (!n) return;
+
+  const step = Math.min(dt, 0.06);
+  const spd = 68 * P.speed * (V.reduced ? 0.65 : 1);
+  const swirl = P.swirl;
+  const icons = V.icons.list;
+  const ns = 0.0017;
+  const timeOff = t * 0.02;
+
+  /* advect */
+  for (let i = 0; i < n; i++) {
+    let x = px[i];
+    let y = py[i];
+    const nv = fbm(flowA, x * ns + timeOff, y * ns - timeOff * 0.7, 2);
+    let ang = nv * TAU * 1.7 + Math.sin(t * 0.11 + i * 0.013) * 0.25;
+    let vx = Math.cos(ang);
+    let vy = Math.sin(ang);
+
+    /* icons bend the field: soft repulsion + tangential swirl */
+    for (let k = 0; k < icons.length; k++) {
+      const ic = icons[k];
+      const cx = ic.x + ic.w * 0.5;
+      const cy = ic.y + ic.h * 0.5;
+      const hw = ic.w * 0.5;
+      const hh = ic.h * 0.5;
+      const dx = x - cx;
+      const dy = y - cy;
+      const R = Math.max(hw, hh) + 82;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < R * R) {
+        const d = Math.sqrt(d2) || 1;
+        const f = 1 - d / R;
+        const rep = f * f * (1.5 + swirl * 3.4);
+        vx += (dx / d) * rep;
+        vy += (dy / d) * rep;
+        const tang = f * swirl * 2.4;
+        vx += (-dy / d) * tang;
+        vy += (dx / d) * tang;
+        if (Math.abs(dx) < hw + 6 && Math.abs(dy) < hh + 6) {
+          const ox = hw + 6 - Math.abs(dx);
+          const oy = hh + 6 - Math.abs(dy);
+          if (ox < oy) vx += (dx < 0 ? -1 : 1) * ox * 0.07;
+          else vy += (dy < 0 ? -1 : 1) * oy * 0.07;
+        }
+      }
+    }
+
+    const len = Math.hypot(vx, vy) || 1;
+    vx /= len;
+    vy /= len;
+
+    ppx[i] = x;
+    ppy[i] = y;
+    const st = spd * psp[i] * step;
+    x += vx * st;
+    y += vy * st;
+    px[i] = x;
+    py[i] = y;
+    pa[i] = Math.atan2(vy, vx);
+
+    if (x < -70 || x > W + 70 || y < -70 || y > H + 70) {
+      spawn(i);
+      pbidx[i] = 255;
+      continue;
+    }
+
+    let u = (pa[i] + Math.PI) / TAU;
+    u = u * 0.82 + ((psp[i] - 0.65) / 0.95) * 0.18 + (ptone[i] / 255) * 0.35;
+    u -= Math.floor(u);
+    pbidx[i] = (u * BUCKETS) | 0;
+  }
+
+  /* draw trails grouped by colour bucket (few state changes) */
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 1.05;
+  for (let b = 0; b < BUCKETS; b++) {
+    const shade = shades[Math.round((b / (BUCKETS - 1)) * (MAX_SHADES - 1))];
+    ctx.strokeStyle = shade;
+    ctx.globalAlpha = 0.4;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      if (pbidx[i] !== b) continue;
+      ctx.moveTo(ppx[i], ppy[i]);
+      ctx.lineTo(px[i], py[i]);
+    }
+    ctx.stroke();
+  }
+
+  /* faint rings reveal where icons bend the current */
+  const icons2 = V.icons.list;
+  ctx.strokeStyle = shades[MAX_SHADES - 1];
+  for (let i = 0; i < icons2.length; i++) {
+    const ic = icons2[i];
+    const fade = ic.gone ? 1 - clamp((V.icons._clock - ic.gone) / 1.6, 0, 1) : 1;
+    if (fade <= 0) continue;
+    const cx = ic.x + ic.w * 0.5;
+    const cy = ic.y + ic.h * 0.5;
+    const rr = Math.max(ic.w, ic.h) * 0.7;
+    ctx.globalAlpha = 0.1 * fade;
+    for (let q = 0; q < 2; q++) {
+      const a0 = t * 0.4 + q * 1.5 + (ic.seed % 17) * 0.2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, rr + q * 8 + Math.sin(t * 0.6 + ic.seed % 11) * 2, a0, a0 + 1.7);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+
+  V.vignette(ctx, W, H, 0.38);
+  V.grain(ctx, W, H, 0.022);
+});
+</script>
+</body>
+</html>

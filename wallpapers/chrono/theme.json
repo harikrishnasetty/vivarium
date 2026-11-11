@@ -1,0 +1,16 @@
+{
+  "id": "chrono",
+  "name": "Chrono",
+  "category": "Utility",
+  "tagline": "A quiet clock that keeps the room calm.",
+  "desc": "A minimal typographic clock with date, week progress and moon phase. The palette follows your local time of day, and each desktop icon gets a soft ink wash so it sits naturally on the page.",
+  "tags": ["clock", "minimal", "typography", "day-night"],
+  "thumb": { "from": "#0e1214", "to": "#31424a", "accent": "#7fd6b0" },
+  "params": [
+    { "group": "Look", "key": "style", "label": "Style", "type": "select", "options": [["auto", "Auto (time of day)"], ["light", "Light"], ["dark", "Dark"], ["ink", "Ink"]], "default": "auto" },
+    { "group": "Details", "key": "seconds", "label": "Show seconds", "type": "toggle", "default": true },
+    { "group": "Details", "key": "date", "label": "Show date", "type": "toggle", "default": true },
+    { "group": "Details", "key": "moon", "label": "Show moon phase", "type": "toggle", "default": true },
+    { "group": "Details", "key": "hour24", "label": "24-hour clock", "type": "toggle", "default": true }
+  ]
+}

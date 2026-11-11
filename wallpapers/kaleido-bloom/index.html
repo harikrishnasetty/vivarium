@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kaleido Bloom — Vivarium</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0718; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script type="module">
+import {
+  Vivarium, TAU, clamp, smoothstep, makeNoise2D, mulberry32, mixHex,
+} from '../_runtime/engine.js';
+
+const V = await Vivarium.ready;
+const view = V.canvas('stage');
+const ctx = view.ctx;
+
+/* ------------------------------------------------------------------ */
+/* Parameters                                                         */
+/* ------------------------------------------------------------------ */
+const DEFAULTS = { symmetry: '8', speed: 0.7, glow: 0.7, blooms: 3, palette: 'dusk' };
+let P = Object.assign({}, DEFAULTS, V.params);
+V.on('params', (p) => {
+  const prev = P;
+  P = Object.assign({}, P, p);
+  if (prev.palette !== P.palette) {
+    buildSprites();
+    buildBackground();
+  }
+  if (prev.blooms !== P.blooms) buildBlooms();
+});
+
+/* ------------------------------------------------------------------ */
+/* Palettes, sprites                                                  */
+/* ------------------------------------------------------------------ */
+const PAL = {
+  dusk: { bg: ['#0b0718', '#1b1230', '#3d1f52'], cols: ['#6a2f78', '#a8436b', '#e2705f', '#ffc98a', '#ffe9d0'] },
+  aurora: { bg: ['#04141a', '#062630', '#0a3540'], cols: ['#0f5f74', '#2fd3a8', '#7ff0d0', '#c8ffe9', '#eafff8'] },
+  candy: { bg: ['#160a1e', '#2a1030', '#401a3e'], cols: ['#7a2a8a', '#c2467a', '#ff7fa8', '#ffb8d0', '#ffe6c0'] },
+};
+
+const bloomNoise = makeNoise2D(8111);
+
+let W = 0;
+let H = 0;
+let blooms = [];
+let bgLayer = null;
+let sprites = [];
+
+function pal() {
+  return PAL[P.palette] || PAL.dusk;
+}
+
+function makeGlow(color) {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grad.addColorStop(0, color);
+  grad.addColorStop(0.28, color);
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  g.globalAlpha = 0.55;
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 128, 128);
+  return c;
+}
+
+function buildSprites() {
+  sprites = pal().cols.map((c) => makeGlow(c));
+}
+
+function buildBackground() {
+  if (!W || !H) return;
+  const p = pal();
+  bgLayer = document.createElement('canvas');
+  bgLayer.width = W;
+  bgLayer.height = H;
+  const g = bgLayer.getContext('2d');
+  V.bg(g, W, H, p.bg);
+  const m = Math.max(W, H);
+  const glow = g.createRadialGradient(W * 0.5, H * 0.48, 0, W * 0.5, H * 0.48, m * 0.72);
+  glow.addColorStop(0, 'rgba(255,255,255,0.05)');
+  glow.addColorStop(0.55, 'rgba(255,255,255,0.015)');
+  glow.addColorStop(1, 'rgba(0,0,0,0.35)');
+  g.fillStyle = glow;
+  g.fillRect(0, 0, W, H);
+}
+
+function colorAt(u) {
+  const cols = pal().cols;
+  u = u - Math.floor(u);
+  const f = u * (cols.length - 1);
+  const i = Math.min(cols.length - 2, Math.floor(f));
+  return mixHex(cols[i], cols[i + 1], f - i);
+}
+
+/* ------------------------------------------------------------------ */
+/* Layout                                                             */
+/* ------------------------------------------------------------------ */
+function buildBlooms() {
+  const count = Math.round(P.blooms);
+  const r = mulberry32(3301 + count * 17);
+  const m = Math.min(W || 1920, H || 1080);
+  blooms = [];
+  for (let i = 0; i < count; i++) {
+    blooms.push({
+      bx: (0.12 + r() * 0.76) * W,
+      by: (0.12 + r() * 0.76) * H,
+      R: m * (0.09 + r() * 0.13),
+      phase: r() * TAU,
+      tone: r(),
+      spin: (r() < 0.5 ? -1 : 1) * (0.5 + r() * 0.8),
+      nx: r() * 20,
+      ny: r() * 20,
+    });
+  }
+}
+
+function rebuild() {
+  W = view.w;
+  H = view.h;
+  buildSprites();
+  buildBackground();
+  buildBlooms();
+}
+
+view.onResize(rebuild);
+rebuild();
+
+/* ------------------------------------------------------------------ */
+/* Bloom drawing                                                      */
+/* ------------------------------------------------------------------ */
+function petal(R, color, alpha, bend) {
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.bezierCurveTo(R * 0.22, -R * 0.34 * (1 + bend), R * 0.78, -R * 0.32, R, -R * 0.02);
+  ctx.bezierCurveTo(R * 0.74, R * 0.16, R * 0.24, R * 0.24, 0, 0);
+  ctx.fill();
+}
+
+function drawBloom(x, y, R, phase, tone, alpha, t, spin, motion) {
+  const sym = clamp(Math.round(Number(P.symmetry) || 8), 3, 16);
+  const rot = t * (0.16 + P.speed * 0.3) * spin * motion + phase;
+  const wob = bloomNoise(x * 0.003 + t * 0.02, y * 0.003 - t * 0.015);
+  const rr = R * (0.92 + wob * 0.12);
+  const c1 = colorAt(tone + t * 0.02);
+  const c2 = colorAt(tone + 0.28 + t * 0.02);
+  const c3 = colorAt(tone + 0.55 + t * 0.02);
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < sym; i++) {
+    ctx.save();
+    ctx.rotate((i / sym) * TAU);
+    petal(rr, c1, alpha * 0.5, 0.08);
+    ctx.save();
+    ctx.scale(1, -1);
+    petal(rr * 0.94, c2, alpha * 0.32, 0.34);
+    ctx.restore();
+    ctx.save();
+    ctx.scale(0.6, 0.6);
+    petal(rr, c3, alpha * 0.16, 0.18);
+    ctx.restore();
+    ctx.restore();
+  }
+  const sprite = sprites[(Math.floor(tone * 997) + 3) % sprites.length];
+  const gs = rr * 1.55;
+  ctx.globalAlpha = alpha * (0.35 + P.glow * 0.9);
+  ctx.drawImage(sprite, -gs / 2, -gs / 2, gs, gs);
+  ctx.restore();
+}
+
+/* ------------------------------------------------------------------ */
+/* Frame                                                              */
+/* ------------------------------------------------------------------ */
+V.loop((dt, t) => {
+  if (!bgLayer) return;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.drawImage(bgLayer, 0, 0, W, H);
+
+  const motion = V.reduced ? 0.55 : 1;
+  const m = Math.min(W, H);
+
+  /* the kaleidoscope itself */
+  drawBloom(W / 2, H / 2, m * 0.34, 0.3, 0.12, 0.34, t, -1, motion);
+
+  /* slow rings in the core */
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = colorAt(0.62 + t * 0.02);
+  ctx.lineWidth = 1;
+  for (let k = 0; k < 3; k++) {
+    ctx.globalAlpha = (0.05 + 0.06 * P.glow) * (1 - k * 0.22);
+    const a0 = t * 0.22 * motion + k * 1.7;
+    ctx.beginPath();
+    ctx.arc(W / 2, H / 2, m * (0.1 + k * 0.065), a0, a0 + 2.3);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  /* ambient blooms drifting on noise */
+  const ambient = V.reduced ? Math.ceil(blooms.length * 0.6) : blooms.length;
+  for (let i = 0; i < ambient; i++) {
+    const b = blooms[i];
+    const dx = bloomNoise(b.nx + t * 0.03 * motion, b.ny) * W * 0.07;
+    const dy = bloomNoise(b.nx + 41.7, b.ny + t * 0.026 * motion) * H * 0.055;
+    drawBloom(b.bx + dx, b.by + dy, b.R, b.phase, b.tone, 0.5, t, b.spin, motion);
+  }
+
+  /* each desktop icon grows its own bloom */
+  const icons = V.icons.list;
+  for (let i = 0; i < icons.length; i++) {
+    const ic = icons[i];
+    const fade = ic.gone ? 1 - clamp((V.icons._clock - ic.gone) / 1.6, 0, 1) : 1;
+    if (fade <= 0) continue;
+    const grow = smoothstep(0, 1, 1 - ic.fresh);
+    const R = (ic.w * 0.78 + 16) * (0.55 + 0.45 * grow);
+    const tone = (ic.seed % 1000) / 1000;
+    const phase = (ic.seed % 628) / 100;
+    const spin = (ic.seed % 2 ? 1 : -1) * 0.85;
+    const cx = ic.x + ic.w * 0.5;
+    const cy = ic.y + ic.h * 0.5;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const sprite = sprites[(ic.seed + 1) % sprites.length];
+    const hs = ic.w * 2.1;
+    ctx.globalAlpha = 0.12 * fade * P.glow;
+    ctx.drawImage(sprite, cx - hs / 2, cy - hs / 2, hs, hs);
+    ctx.restore();
+
+    drawBloom(cx, cy, R, phase, tone, 0.58 * fade, t, spin, motion);
+  }
+
+  ctx.globalAlpha = 1;
+  V.vignette(ctx, W, H, 0.55);
+  V.grain(ctx, W, H, 0.035);
+});
+</script>
+</body>
+</html>

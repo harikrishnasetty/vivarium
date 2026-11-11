@@ -1,0 +1,21 @@
+# Build output
+host/bin/
+dist/
+
+# Downloaded dependencies (WebView2 SDK)
+host/.deps/
+
+# Local tooling
+node_modules/
+*.log
+
+# OS / editor noise
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# User-local settings never belong in the repo
+settings.local.json

@@ -1,0 +1,16 @@
+{
+  "id": "zen-garden",
+  "name": "Zen Garden",
+  "category": "Ambient",
+  "tagline": "Raked sand that rearranges itself around your icons.",
+  "desc": "A quiet karesansui garden. Concentric rake rings form around every desktop icon, moss settles beneath them, and cherry petals drift across the sand.",
+  "tags": ["adaptive", "calm", "japanese", "minimal"],
+  "thumb": { "from": "#ece4d2", "to": "#b7a98b", "accent": "#e8a3b4" },
+  "params": [
+    { "group": "Garden", "key": "rings", "label": "Rake rings", "type": "toggle", "default": true },
+    { "group": "Garden", "key": "stones", "label": "Stones", "type": "range", "min": 0, "max": 8, "step": 1, "default": 5 },
+    { "group": "Life", "key": "petals", "label": "Cherry petals", "type": "range", "min": 0, "max": 120, "step": 4, "default": 36 },
+    { "group": "Life", "key": "butterfly", "label": "Butterfly", "type": "toggle", "default": true },
+    { "group": "Motion", "key": "wind", "label": "Wind", "type": "range", "min": 0, "max": 2, "step": 0.1, "default": 1 }
+  ]
+}

@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video — Vivarium</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05080a; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script type="module">
+import { Vivarium, TAU, clamp } from '../_runtime/engine.js';
+
+const V = await Vivarium.ready;
+const view = V.canvas('stage');
+const ctx = view.ctx;
+
+const DEFAULTS = { fit: 'cover', speed: 1, dim: 0.12, grain: 0.2, vignette: 0.35 };
+let P = Object.assign({}, DEFAULTS, V.params);
+V.on('params', (p) => {
+  const prev = P;
+  P = Object.assign({}, P, p);
+  if (prev.speed !== P.speed) applySpeed();
+});
+
+/* ------------------------------------------------------------------ */
+/* Video element                                                      */
+/* ------------------------------------------------------------------ */
+const video = document.createElement('video');
+video.muted = true;
+video.loop = true;
+video.autoplay = true;
+video.playsInline = true;
+video.preload = 'auto';
+video.setAttribute('playsinline', '');
+video.style.position = 'fixed';
+video.style.left = '-4px';
+video.style.top = '-4px';
+video.style.width = '2px';
+video.style.height = '2px';
+video.style.opacity = '0';
+video.style.pointerEvents = 'none';
+document.body.appendChild(video);
+
+let source = '';
+let ready = false;
+let failed = false;
+
+function applySpeed() {
+  const speed = clamp(Number(P.speed) || 1, 0.25, 2);
+  try {
+    video.playbackRate = speed;
+  } catch (e) {
+    /* older runtime ignores playbackRate changes */
+  }
+}
+
+function play() {
+  const attempt = video.play();
+  if (attempt && attempt.catch) {
+    attempt.catch(function () {
+      /* autoplay can be blocked until the first user gesture; the frame stays black */
+    });
+  }
+}
+
+function setVideo(url) {
+  if (!url) {
+    source = '';
+    ready = false;
+    failed = false;
+    try { video.pause(); } catch (e) { /* ignore */ }
+    video.removeAttribute('src');
+    try { video.load(); } catch (e) { /* ignore */ }
+    return;
+  }
+  if (url === source) return;
+  source = url;
+  ready = false;
+  failed = false;
+  video.src = url;
+  try { video.load(); } catch (e) { /* ignore */ }
+  applySpeed();
+  play();
+}
+
+video.addEventListener('loadeddata', function () {
+  ready = true;
+  failed = false;
+  applySpeed();
+  play();
+});
+video.addEventListener('canplay', function () {
+  ready = true;
+  play();
+});
+video.addEventListener('error', function () {
+  failed = true;
+  ready = false;
+});
+video.addEventListener('playing', function () {
+  ready = true;
+});
+
+const initial = V.media && V.media.video;
+if (initial) setVideo(initial);
+
+V.on('media', function (media) {
+  setVideo(media && media.video ? media.video : '');
+});
+
+/* ------------------------------------------------------------------ */
+/* Placeholder                                                        */
+/* ------------------------------------------------------------------ */
+function drawPlaceholder(t) {
+  V.bg(ctx, view.w, view.h, ['#070b0e', '#0b1418', '#081013']);
+
+  const w = view.w;
+  const h = view.h;
+  const blobs = [
+    { x: 0.24, y: 0.32, r: 0.52, hue: 'rgba(72,148,168,', drift: 0.055 },
+    { x: 0.78, y: 0.24, r: 0.44, hue: 'rgba(126,104,168,', drift: 0.041 },
+    { x: 0.58, y: 0.82, r: 0.60, hue: 'rgba(46,120,110,', drift: 0.033 },
+  ];
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < blobs.length; i++) {
+    const b = blobs[i];
+    const dx = Math.sin(t * b.drift + i * 2.1) * w * 0.05;
+    const dy = Math.cos(t * b.drift * 0.8 + i * 1.4) * h * 0.045;
+    const cx = w * b.x + dx;
+    const cy = h * b.y + dy;
+    const rad = Math.min(w, h) * b.r;
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+    const pulse = 0.16 + 0.05 * Math.sin(t * 0.25 + i);
+    g.addColorStop(0, b.hue + pulse + ')');
+    g.addColorStop(0.55, b.hue + pulse * 0.35 + ')');
+    g.addColorStop(1, b.hue + '0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  }
+  ctx.restore();
+
+  /* slow light sweep, like a projector beam */
+  const sweep = ((t * 0.035) % 1) * 1.6 - 0.3;
+  const sx = w * sweep;
+  const beam = ctx.createLinearGradient(sx - w * 0.2, 0, sx + w * 0.2, h);
+  beam.addColorStop(0, 'rgba(255,255,255,0)');
+  beam.addColorStop(0.5, 'rgba(180,220,235,0.035)');
+  beam.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = beam;
+  ctx.fillRect(0, 0, w, h);
+
+  /* film gate frame */
+  const m = Math.min(w, h) * 0.12;
+  ctx.strokeStyle = 'rgba(190,215,225,0.08)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(m, m * 0.72, w - m * 2, h - m * 1.44);
+
+  const scale = clamp(Math.min(w, h) / 900, 0.7, 1.6);
+  const cx = w / 2;
+  const cy = h / 2;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.globalAlpha = 0.30;
+  ctx.strokeStyle = '#cfe9f2';
+  ctx.lineWidth = 1.6 * scale;
+  ctx.beginPath();
+  ctx.arc(0, 0, 34 * scale, 0, TAU);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-9 * scale, -13 * scale);
+  ctx.lineTo(15 * scale, 0);
+  ctx.lineTo(-9 * scale, 13 * scale);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  ctx.globalAlpha = 0.42;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#d7e9ef';
+  ctx.font = '600 ' + Math.round(15 * scale) + 'px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText('No video selected', cx, cy + 74 * scale);
+  ctx.globalAlpha = 0.26;
+  ctx.font = '400 ' + Math.round(12.5 * scale) + 'px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText('Open Vivarium → Media → Choose video', cx, cy + 96 * scale);
+  ctx.restore();
+}
+
+/* ------------------------------------------------------------------ */
+/* Frame                                                              */
+/* ------------------------------------------------------------------ */
+function sourceSize() {
+  const vw = video.videoWidth || 0;
+  const vh = video.videoHeight || 0;
+  if (vw > 0 && vh > 0) return { w: vw, h: vh };
+  return null;
+}
+
+function drawFrame() {
+  const w = view.w;
+  const h = view.h;
+  const size = sourceSize();
+
+  if (!size || !ready || failed) {
+    drawPlaceholder(performance.now() / 1000);
+    return;
+  }
+
+  let dw;
+  let dh;
+  let dx;
+  let dy;
+
+  if (P.fit === 'stretch') {
+    dx = 0;
+    dy = 0;
+    dw = w;
+    dh = h;
+  } else {
+    const scale =
+      P.fit === 'contain'
+        ? Math.min(w / size.w, h / size.h)
+        : Math.max(w / size.w, h / size.h);
+    dw = size.w * scale;
+    dh = size.h * scale;
+    dx = (w - dw) / 2;
+    dy = (h - dh) / 2;
+  }
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, w, h);
+  try {
+    ctx.drawImage(video, dx, dy, dw, dh);
+  } catch (e) {
+    /* frame not decodable yet */
+  }
+
+  if (P.dim > 0) {
+    ctx.fillStyle = 'rgba(0,0,0,' + clamp(P.dim, 0, 0.85) + ')';
+    ctx.fillRect(0, 0, w, h);
+  }
+}
+
+/* Keep the renderer alive even when the video stalls; grain and vignette
+   still update and the last decoded frame stays on screen. */
+V.loop((dt, t) => {
+  drawFrame();
+  if (P.vignette > 0) V.vignette(ctx, view.w, view.h, clamp(P.vignette, 0, 1) * 0.8);
+  if (P.grain > 0) V.grain(ctx, view.w, view.h, clamp(P.grain, 0, 1) * 0.09);
+});
+</script>
+</body>
+</html>

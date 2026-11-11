@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snowlight — Vivarium</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #040d14; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script type="module">
+import {
+  Vivarium, TAU, clamp, smoothstep, makeNoise2D, fbm,
+  mulberry32, hexToRgb, mixHex, rgba,
+} from '../_runtime/engine.js';
+
+const V = await Vivarium.ready;
+const view = V.canvas('stage');
+const ctx = view.ctx;
+
+const DEFAULTS = { aurora: 0.7, snow: 0.6, wind: 1, moon: true, meteors: true };
+let P = Object.assign({}, DEFAULTS, V.params);
+V.on('params', (p) => {
+  const prev = P;
+  P = Object.assign({}, P, p);
+  if (prev.snow !== P.snow) buildFlakes();
+});
+
+const auroraNoise = makeNoise2D(5107);
+const mtnNoise = makeNoise2D(6203);
+const snowNoise = makeNoise2D(7717);
+
+let W = 0;
+let H = 0;
+let skyCanvas = null;
+let valley = null;
+let mountains = [];
+let flakes = [];
+let twinkles = [];
+let auroraTex = null;
+let moonSprite = null;
+let moundSprite = null;
+let shadowSprite = null;
+let glowMint = null;
+let meteor = { active: false, next: 6 + Math.random() * 10, t0: 0, dur: 1, x: 0, y: 0, len: 0, ang: 0 };
+
+const AURORAS = [
+  { base: 0.16, amp: 0.028, height: 0.13, freq: 0.85, speed: 0.13, drift: 0.008, seed: 31.9, c1: '#7a6bd6', c2: '#3f7f9a', c3: '#7fffd4', a: 0.42 },
+  { base: 0.23, amp: 0.038, height: 0.20, freq: 1.05, speed: 0.22, drift: 0.012, seed: 3.1, c1: '#7a6bd6', c2: '#1f6f7a', c3: '#7fffd4', a: 0.58 },
+  { base: 0.30, amp: 0.046, height: 0.24, freq: 1.35, speed: 0.17, drift: 0.018, seed: 11.7, c1: '#7a6bd6', c2: '#2fd3a8', c3: '#d8fff2', a: 0.7 },
+  { base: 0.38, amp: 0.030, height: 0.16, freq: 1.8, speed: 0.26, drift: 0.024, seed: 23.4, c1: '#1f6f7a', c2: '#2fd3a8', c3: '#7fffd4', a: 0.5 },
+];
+
+const MOUNTAINS = [
+  { base: 0.66, amp: 0.15, freq: 1.1, near: 0.0, seed: 5 },
+  { base: 0.745, amp: 0.12, freq: 1.5, near: 0.45, seed: 9 },
+  { base: 0.825, amp: 0.085, freq: 2.0, near: 1.0, seed: 13 },
+];
+
+function makeGlowSprite(color, size) {
+  const s = size || 128;
+  const c = document.createElement('canvas');
+  c.width = s;
+  c.height = s;
+  const g = c.getContext('2d');
+  const rgb = hexToRgb(color);
+  const grad = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  grad.addColorStop(0, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',1)');
+  grad.addColorStop(0.22, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.5)');
+  grad.addColorStop(0.6, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.12)');
+  grad.addColorStop(1, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, s, s);
+  return c;
+}
+
+function makeMoonSprite() {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(54, 50, 4, 64, 64, 62);
+  grad.addColorStop(0, '#f2fffb');
+  grad.addColorStop(0.7, '#d8fff2');
+  grad.addColorStop(1, '#a9d8d0');
+  g.fillStyle = grad;
+  g.beginPath();
+  g.arc(64, 64, 62, 0, TAU);
+  g.fill();
+  const rnd = mulberry32(4801);
+  for (let i = 0; i < 9; i++) {
+    const a = rnd() * TAU;
+    const d = rnd() * 40;
+    const r = 3 + rnd() * 9;
+    g.fillStyle = 'rgba(110,150,150,' + (0.10 + rnd() * 0.14) + ')';
+    g.beginPath();
+    g.arc(64 + Math.cos(a) * d, 64 + Math.sin(a) * d, r, 0, TAU);
+    g.fill();
+  }
+  moonSprite = c;
+}
+
+function makeMoundSprite() {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 96;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(64, 66, 2, 64, 60, 62);
+  grad.addColorStop(0, 'rgba(216,255,242,0.72)');
+  grad.addColorStop(0.5, 'rgba(170,225,225,0.42)');
+  grad.addColorStop(1, 'rgba(150,210,220,0)');
+  g.fillStyle = grad;
+  g.save();
+  g.translate(64, 60);
+  g.scale(1, 0.62);
+  g.beginPath();
+  g.arc(0, 0, 60, 0, TAU);
+  g.fill();
+  g.restore();
+  const hi = g.createLinearGradient(0, 28, 0, 60);
+  hi.addColorStop(0, 'rgba(240,255,250,0.35)');
+  hi.addColorStop(1, 'rgba(240,255,250,0)');
+  g.fillStyle = hi;
+  g.beginPath();
+  g.ellipse(64, 46, 44, 16, 0, 0, TAU);
+  g.fill();
+  moundSprite = c;
+}
+
+function makeShadowSprite() {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grad.addColorStop(0, 'rgba(4,20,30,0.5)');
+  grad.addColorStop(0.55, 'rgba(4,20,30,0.24)');
+  grad.addColorStop(1, 'rgba(4,20,30,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 128, 128);
+  shadowSprite = c;
+}
+
+function makeAuroraTex() {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 256;
+  const g = c.getContext('2d');
+  const rnd = mulberry32(8811);
+  for (let i = 0; i < 44; i++) {
+    const x = rnd() * 256;
+    const w = 3 + rnd() * 15;
+    const a = 0.03 + rnd() * 0.09;
+    const grad = g.createLinearGradient(x, 0, x + w, 0);
+    grad.addColorStop(0, 'rgba(216,255,242,0)');
+    grad.addColorStop(0.5, 'rgba(216,255,242,' + a + ')');
+    grad.addColorStop(1, 'rgba(216,255,242,0)');
+    g.fillStyle = grad;
+    g.fillRect(x, 0, w, 256);
+  }
+  auroraTex = c;
+}
+
+makeMoonSprite();
+makeMoundSprite();
+makeShadowSprite();
+makeAuroraTex();
+glowMint = makeGlowSprite('#d8fff2');
+
+/* ------------------------------------------------------------------ */
+/* Baked sky and terrain                                               */
+/* ------------------------------------------------------------------ */
+function buildSky() {
+  skyCanvas = document.createElement('canvas');
+  skyCanvas.width = Math.max(1, W);
+  skyCanvas.height = Math.max(1, Math.ceil(H * 0.8));
+  const g = skyCanvas.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, H * 0.8);
+  grad.addColorStop(0, '#040d14');
+  grad.addColorStop(0.5, '#07202b');
+  grad.addColorStop(0.84, '#0a2233');
+  grad.addColorStop(1, '#0c2c38');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, W, H * 0.8);
+
+  g.save();
+  g.translate(W * 0.32, H * 0.12);
+  g.rotate(-0.55);
+  const mw = g.createLinearGradient(0, -H * 0.13, 0, H * 0.13);
+  mw.addColorStop(0, 'rgba(140,180,205,0)');
+  mw.addColorStop(0.5, 'rgba(150,190,215,0.07)');
+  mw.addColorStop(1, 'rgba(140,180,205,0)');
+  g.fillStyle = mw;
+  g.fillRect(-W * 0.7, -H * 0.13, W * 1.4, H * 0.26);
+  g.restore();
+
+  const rnd = mulberry32(2202);
+  const n = Math.round(clamp((W * H) / 8500, 90, 520));
+  for (let i = 0; i < n; i++) {
+    const x = rnd() * W;
+    const y = rnd() * H * 0.72;
+    const s = rnd() < 0.85 ? 0.7 : 1.4;
+    g.fillStyle = 'rgba(216,255,242,' + (0.12 + rnd() * 0.5) + ')';
+    g.fillRect(x, y, s, s);
+  }
+
+  twinkles = [];
+  const tr = mulberry32(3311);
+  for (let i = 0; i < 24; i++) {
+    twinkles.push({
+      x: tr() * W,
+      y: tr() * H * 0.62,
+      ph: tr() * TAU,
+      sp: 0.5 + tr() * 1.6,
+      size: 7 + tr() * 12,
+    });
+  }
+}
+
+function mtnY(x, M, seed) {
+  const n = fbm(mtnNoise, x * 0.0016 * M.freq + seed, M.base * 20, 4);
+  const ridge = 1 - Math.abs(n);
+  return H * M.base - (ridge * 0.72 + 0.28) * H * M.amp;
+}
+
+function buildMountain(M, idx) {
+  const top = Math.max(0, Math.floor(H * (M.base - M.amp) - 40));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, W);
+  c.height = Math.max(1, Math.ceil(H - top));
+  const g = c.getContext('2d');
+  g.translate(0, -top);
+  const step = Math.max(6, W / 160);
+  const pts = [];
+  for (let x = 0; x <= W + step; x += step) pts.push([x, mtnY(x, M, idx * 17.3)]);
+
+  g.beginPath();
+  g.moveTo(0, H + 8);
+  for (let i = 0; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
+  g.lineTo(W, H + 8);
+  g.closePath();
+  g.fillStyle = mixHex('#123848', '#050e16', M.near);
+  g.fill();
+
+  g.beginPath();
+  g.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
+  g.strokeStyle = '#bfeee6';
+  g.globalAlpha = 0.05 + 0.05 * M.near;
+  g.lineWidth = 12;
+  g.stroke();
+  g.globalAlpha = 0.14 + 0.16 * M.near;
+  g.lineWidth = 1.4;
+  g.stroke();
+  g.globalAlpha = 1;
+
+  if (M.near > 0.6) {
+    const rnd = mulberry32(5500 + M.seed);
+    for (let i = 0; i < 90; i++) {
+      const p = pts[(rnd() * pts.length) | 0];
+      const y = p[1] + 6 + rnd() * H * 0.05;
+      g.fillStyle = 'rgba(216,255,242,' + (0.04 + rnd() * 0.10) + ')';
+      g.beginPath();
+      g.ellipse(p[0] + rnd() * 20, y, 4 + rnd() * 16, 2 + rnd() * 5, 0, 0, TAU);
+      g.fill();
+    }
+  }
+  return { canvas: c, top: top };
+}
+
+function buildValley() {
+  const top = Math.floor(H * 0.68);
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, W);
+  c.height = Math.max(1, Math.ceil(H - top));
+  const g = c.getContext('2d');
+  g.translate(0, -top);
+  const grad = g.createLinearGradient(0, H * 0.7, 0, H);
+  grad.addColorStop(0, '#0e2a38');
+  grad.addColorStop(0.45, '#0a1e2a');
+  grad.addColorStop(1, '#061018');
+  g.fillStyle = grad;
+  g.fillRect(0, top, W, H - top);
+
+  const rnd = mulberry32(6600);
+  for (let i = 0; i < 30; i++) {
+    const x = rnd() * W;
+    const y = H * (0.78 + rnd() * 0.24);
+    const rx = 70 + rnd() * 220;
+    const ry = 16 + rnd() * 42;
+    const mg = g.createRadialGradient(x, y, 0, x, y, rx);
+    mg.addColorStop(0, 'rgba(170,225,225,' + (0.05 + rnd() * 0.07) + ')');
+    mg.addColorStop(1, 'rgba(170,225,225,0)');
+    g.save();
+    g.translate(x, y);
+    g.scale(1, ry / rx);
+    g.fillStyle = mg;
+    g.beginPath();
+    g.arc(0, 0, rx, 0, TAU);
+    g.fill();
+    g.restore();
+  }
+
+  for (let i = 0; i < 260; i++) {
+    const x = rnd() * W;
+    const y = H * (0.78 + rnd() * 0.22);
+    g.fillStyle = 'rgba(216,255,242,' + (0.08 + rnd() * 0.26) + ')';
+    g.fillRect(x, y, 0.8 + rnd() * 1.4, 0.8 + rnd() * 1.4);
+  }
+  return { canvas: c, top: top };
+}
+
+function buildFlakes() {
+  const area = clamp((W * H) / (1920 * 1080), 0.3, 1.5);
+  const total = Math.min(460, Math.round(P.snow * 300 * area * (V.reduced ? 0.5 : 1)));
+  const per = Math.ceil(total / 3);
+  const rnd = mulberry32(9200 + total * 3);
+  flakes = [];
+  for (let d = 0; d < 3; d++) {
+    for (let i = 0; i < per && flakes.length < total; i++) {
+      flakes.push({
+        x: rnd() * W,
+        y: rnd() * H,
+        depth: d,
+        vy: 16 + d * 17 + rnd() * 14,
+        size: (d === 0 ? 2.4 : d === 1 ? 3.8 : 6.2) * (0.7 + rnd() * 0.7),
+        alpha: d === 0 ? 0.38 : d === 1 ? 0.66 : 0.95,
+        ph: rnd() * TAU,
+      });
+    }
+  }
+}
+
+const flakeSprites = [0, 1, 2].map(function (d) {
+  const s = 32;
+  const c = document.createElement('canvas');
+  c.width = s;
+  c.height = s;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(16, 16, 0, 16, 16, 15);
+  grad.addColorStop(0, 'rgba(240,255,250,1)');
+  grad.addColorStop(0.35, 'rgba(216,255,242,0.65)');
+  grad.addColorStop(1, 'rgba(216,255,242,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, s, s);
+  if (d === 2) {
+    g.strokeStyle = 'rgba(240,255,250,0.5)';
+    g.lineWidth = 0.9;
+    for (let i = 0; i < 6; i++) {
+      const a = (i * TAU) / 6;
+      g.beginPath();
+      g.moveTo(16, 16);
+      g.lineTo(16 + Math.cos(a) * 12, 16 + Math.sin(a) * 12);
+      g.stroke();
+    }
+  }
+  return c;
+});
+
+/* ------------------------------------------------------------------ */
+/* Layout                                                              */
+/* ------------------------------------------------------------------ */
+function rebuild() {
+  W = view.w;
+  H = view.h;
+  if (!W || !H) return;
+  buildSky();
+  mountains = MOUNTAINS.map(buildMountain);
+  valley = buildValley();
+  buildFlakes();
+  meteor.active = false;
+}
+
+view.onResize(rebuild);
+rebuild();
+
+/* ------------------------------------------------------------------ */
+/* Drawing                                                             */
+/* ------------------------------------------------------------------ */
+function drawAurora(t) {
+  if (P.aurora < 0.01) return;
+  const step = Math.max(12, W / 96);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let r = 0; r < AURORAS.length; r++) {
+    const A = AURORAS[r];
+    const xs = [];
+    const top = [];
+    const bot = [];
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let x = -step; x <= W + step; x += step) {
+      const n = fbm(auroraNoise, x * 0.0011 * A.freq + A.seed + t * A.drift, t * 0.05 + A.seed, 3);
+      const y0 = H * A.base + n * H * A.amp;
+      const breathe = Math.sin(x * 0.0032 + t * A.speed + A.seed) * H * 0.018;
+      const hgt = H * A.height * (0.72 + 0.28 * Math.sin(x * 0.0021 + t * A.speed * 0.7 + A.seed * 2));
+      const ty = y0 + breathe - hgt * 0.35;
+      const by = y0 + breathe + hgt;
+      xs.push(x);
+      top.push(ty);
+      bot.push(by);
+      if (ty < minY) minY = ty;
+      if (by > maxY) maxY = by;
+    }
+    ctx.beginPath();
+    ctx.moveTo(xs[0], top[0]);
+    for (let i = 1; i < xs.length; i++) ctx.lineTo(xs[i], top[i]);
+    for (let i = xs.length - 1; i >= 0; i--) ctx.lineTo(xs[i], bot[i]);
+    ctx.closePath();
+    const g = ctx.createLinearGradient(0, minY, 0, maxY);
+    g.addColorStop(0, rgba(A.c1, 0.04 * P.aurora * A.a));
+    g.addColorStop(0.45, rgba(A.c2, 0.10 * P.aurora * A.a));
+    g.addColorStop(0.82, rgba(A.c3, 0.22 * P.aurora * A.a));
+    g.addColorStop(1, rgba(A.c3, 0));
+    ctx.fillStyle = g;
+    ctx.fill();
+    if (auroraTex) {
+      ctx.save();
+      ctx.clip();
+      ctx.globalAlpha = 0.55 * P.aurora * A.a;
+      const tw = auroraTex.width;
+      const off = (t * A.drift * 1400 + A.seed * 60) % tw;
+      const ty0 = minY - H * 0.02;
+      const th = maxY - minY + H * 0.04;
+      for (let x = -off; x < W + tw; x += tw) ctx.drawImage(auroraTex, x, ty0, tw, th);
+      ctx.restore();
+    }
+    ctx.beginPath();
+    ctx.moveTo(xs[0], bot[0]);
+    for (let i = 1; i < xs.length; i++) ctx.lineTo(xs[i], bot[i]);
+    ctx.strokeStyle = rgba(A.c3, 0.14 * P.aurora * A.a);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawMoon(t) {
+  if (!P.moon) return;
+  const mx = W * 0.76;
+  const my = H * 0.17;
+  const r = clamp(H * 0.036, 16, 44);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.5 + 0.05 * Math.sin(t * 0.4);
+  const halo = r * 9;
+  ctx.drawImage(glowMint, mx - halo / 2, my - halo / 2, halo, halo);
+  ctx.restore();
+  ctx.globalAlpha = 0.95;
+  ctx.drawImage(moonSprite, mx - r, my - r, r * 2, r * 2);
+  ctx.globalAlpha = 1;
+}
+
+function drawTwinkles(t) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < twinkles.length; i++) {
+    const s = twinkles[i];
+    const a = 0.18 + 0.55 * (0.5 + 0.5 * Math.sin(t * s.sp + s.ph));
+    ctx.globalAlpha = a;
+    ctx.drawImage(glowMint, s.x - s.size / 2, s.y - s.size / 2, s.size, s.size);
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+function drawMeteors(t) {
+  if (!P.meteors) return;
+  const m = meteor;
+  if (!m.active) {
+    if (t > m.next) {
+      m.active = true;
+      m.t0 = t;
+      m.dur = 0.9 + Math.random() * 0.8;
+      m.x = W * (0.12 + Math.random() * 0.72);
+      m.y = H * (0.04 + Math.random() * 0.28);
+      m.len = W * (0.09 + Math.random() * 0.1);
+      m.ang = Math.PI * (0.62 + Math.random() * 0.2);
+      m.next = t + 10 + Math.random() * 24;
+    }
+    return;
+  }
+  const age = t - m.t0;
+  if (age > m.dur) {
+    m.active = false;
+    return;
+  }
+  const p = age / m.dur;
+  const fade = Math.sin(Math.PI * p);
+  const hx = m.x + Math.cos(m.ang) * m.len * p;
+  const hy = m.y + Math.sin(m.ang) * m.len * p;
+  const tx = hx - Math.cos(m.ang) * m.len * 0.55;
+  const ty = hy - Math.sin(m.ang) * m.len * 0.55;
+  const g = ctx.createLinearGradient(hx, hy, tx, ty);
+  g.addColorStop(0, 'rgba(216,255,242,' + 0.85 * fade + ')');
+  g.addColorStop(1, 'rgba(216,255,242,0)');
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = g;
+  ctx.lineWidth = 1.8;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(hx, hy);
+  ctx.lineTo(tx, ty);
+  ctx.stroke();
+  ctx.globalAlpha = 0.9 * fade;
+  ctx.drawImage(glowMint, hx - 10, hy - 10, 20, 20);
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+function updateFlakes(dt, t) {
+  const gust = 0.6 + 0.5 * Math.sin(t * 0.37) + 0.24 * Math.sin(t * 0.91 + 2.1);
+  for (let i = 0; i < flakes.length; i++) {
+    const f = flakes[i];
+    const n = snowNoise(f.x * 0.002 + t * 0.02, f.y * 0.002);
+    const df = 0.6 + f.depth * 0.4;
+    f.x += (gust * 26 * P.wind * df + n * 24) * dt;
+    f.y += f.vy * dt * (0.75 + P.wind * 0.35);
+    f.x += Math.sin(t * 0.9 + f.ph) * 7 * dt * (1 + f.depth);
+    if (f.depth === 2) {
+      const p = V.icons.avoid(f.x, f.y, 8, 0.4);
+      f.x = p.x;
+      f.y = p.y;
+    }
+    if (f.y > H + 12) {
+      f.y = -12;
+      f.x = Math.random() * W;
+    }
+    if (f.x < -24) f.x = W + 24;
+    if (f.x > W + 24) f.x = -24;
+  }
+}
+
+function drawFlakes() {
+  for (let i = 0; i < flakes.length; i++) {
+    const f = flakes[i];
+    ctx.globalAlpha = f.alpha;
+    ctx.drawImage(flakeSprites[f.depth], f.x - f.size / 2, f.y - f.size / 2, f.size, f.size);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawIconSnow(t) {
+  const icons = V.icons.list;
+  for (let i = 0; i < icons.length; i++) {
+    const ic = icons[i];
+    const fade = ic.gone ? 1 - clamp((V.icons._clock - ic.gone) / 1.6, 0, 1) : 1;
+    if (fade <= 0) continue;
+    const appear = smoothstep(0, 1, 1 - ic.fresh);
+    const cx = ic.x + ic.w / 2;
+    const cy = ic.y + ic.h - 2;
+    const sw = ic.w * 1.55;
+    ctx.globalAlpha = fade * 0.8;
+    ctx.drawImage(shadowSprite, cx - sw / 2, cy - sw * 0.2, sw, sw * 0.4);
+
+    const wob = 1 + 0.03 * Math.sin(t * 0.8 + (ic.seed % 100));
+    const mw = ic.w * (0.9 + 0.6 * appear) * wob;
+    const mh = mw * 0.5;
+    ctx.globalAlpha = fade * (0.4 + 0.6 * appear) * 0.95;
+    ctx.drawImage(moundSprite, cx - mw / 2, cy - mh * 0.5, mw, mh);
+    ctx.globalAlpha = fade * 0.35 * appear;
+    ctx.drawImage(glowMint, cx - mw * 0.4, cy - mh * 0.35, mw * 0.8, mw * 0.8);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Frame                                                               */
+/* ------------------------------------------------------------------ */
+V.loop((dt, t) => {
+  if (skyCanvas) ctx.drawImage(skyCanvas, 0, 0);
+  else V.bg(ctx, W, H, ['#040d14', '#0a2233']);
+  drawTwinkles(t);
+  drawAurora(t);
+  drawMoon(t);
+  drawMeteors(t);
+  for (let i = 0; i < mountains.length; i++) {
+    ctx.drawImage(mountains[i].canvas, 0, mountains[i].top);
+  }
+  if (valley) ctx.drawImage(valley.canvas, 0, valley.top);
+
+  if (P.aurora > 0.01) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createLinearGradient(0, H * 0.7, 0, H);
+    g.addColorStop(0, rgba('#2fd3a8', 0.07 * P.aurora));
+    g.addColorStop(1, 'rgba(47,211,168,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, H * 0.7, W, H * 0.3);
+    ctx.restore();
+  }
+
+  drawIconSnow(t);
+  updateFlakes(dt, t);
+  drawFlakes();
+  V.vignette(ctx, W, H, 0.55);
+  V.grain(ctx, W, H, 0.055);
+});
+</script>
+</body>
+</html>

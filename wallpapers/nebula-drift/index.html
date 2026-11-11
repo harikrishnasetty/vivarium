@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nebula Drift — Vivarium</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05030f; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script type="module">
+import {
+  Vivarium, TAU, clamp, lerp, smoothstep, makeNoise2D, fbm,
+  mulberry32, hexToRgb, mixHex, rgba,
+} from '../_runtime/engine.js';
+const V = await Vivarium.ready;
+const view = V.canvas('stage');
+const ctx = view.ctx;
+/* ------------------------------------------------------------------ */
+/* Parameters                                                         */
+/* ------------------------------------------------------------------ */
+const DEFAULTS = { nebula: 0.6, stars: 0.7, planets: true, meteors: true, hue: 'violet' };
+let P = Object.assign({}, DEFAULTS, V.params);
+V.on('params', (p) => {
+  const prev = P;
+  P = Object.assign({}, P, p);
+  if (prev.stars !== P.stars) buildStars();
+  if (prev.hue !== P.hue) { buildNebula(); buildDust(); }
+});
+const HUES = {
+  teal: { deep: '#03161c', mid: '#0a3038', core: '#117d78', glow: '#4fd8e8', pale: '#d4fff0' },
+  violet: { deep: '#05030f', mid: '#140a2e', core: '#3b2a6b', glow: '#7a5cd6', pale: '#4fd8e8' },
+  ember: { deep: '#100504', mid: '#2a0e08', core: '#6b2a14', glow: '#e8823f', pale: '#ffd9a3' },
+};
+const palette = () => HUES[P.hue] || HUES.violet;
+const nebulaNoise = makeNoise2D(31337);
+const dustNoise = makeNoise2D(8123);
+let W = 0;
+let H = 0;
+let nebula = null;
+let stars = [];
+let dust = [];
+let meteor = null;
+let nextMeteor = 7;
+const glowCache = new Map();
+/* ------------------------------------------------------------------ */
+/* Sprites                                                            */
+/* ------------------------------------------------------------------ */
+function glowFor(hex) {
+  let c = glowCache.get(hex);
+  if (c) return c;
+  c = document.createElement('canvas');
+  c.width = 64; c.height = 64;
+  const g = c.getContext('2d');
+  const rgb = hexToRgb(hex);
+  const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.95)');
+  gr.addColorStop(0.28, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.35)');
+  gr.addColorStop(1, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0)');
+  g.fillStyle = gr;
+  g.fillRect(0, 0, 64, 64);
+  glowCache.set(hex, c);
+  return c;
+}
+/* ------------------------------------------------------------------ */
+/* Nebula cloud (pre-rendered on resize / hue change)                 */
+/* ------------------------------------------------------------------ */
+function buildNebula() {
+  if (!W || !H) return;
+  const cw = Math.max(4, Math.round(W * 0.5));
+  const ch = Math.max(4, Math.round(H * 0.5));
+  const c = document.createElement('canvas');
+  c.width = cw; c.height = ch;
+  const g = c.getContext('2d');
+  const pal = palette();
+  const r = mulberry32(0x7e4b12);
+  const cols = [pal.core, pal.glow, pal.mid, pal.glow, pal.pale];
+  const span = Math.max(cw, ch);
+  g.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 86; i++) {
+    const u = r();
+    const f = fbm(nebulaNoise, u * 2.4, i * 0.11, 3);
+    const band = 0.48 + Math.sin(u * 3.3 + 0.9) * 0.15;
+    const x = (0.08 + u * 0.84 + f * 0.09 + (r() - 0.5) * 0.06) * cw;
+    const y = (band + (r() - 0.5) * 0.30 + f * 0.07) * ch;
+    const rad = (0.045 + r() * 0.19) * span * (0.8 + f * 0.5);
+    const col = cols[(r() * cols.length) | 0];
+    const rgb = hexToRgb(col);
+    const a = 0.035 + r() * 0.075;
+    const gr = g.createRadialGradient(x, y, 0, x, y, rad);
+    gr.addColorStop(0, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',' + a + ')');
+    gr.addColorStop(0.45, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',' + a * 0.42 + ')');
+    gr.addColorStop(1, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0)');
+    g.fillStyle = gr;
+    g.beginPath();
+    g.arc(x, y, rad, 0, TAU);
+    g.fill();
+  }
+  /* bright core knot */
+  const kx = cw * (0.58 + r() * 0.1);
+  const ky = ch * (0.44 + r() * 0.08);
+  const kr = span * 0.16;
+  const core = g.createRadialGradient(kx, ky, 0, kx, ky, kr);
+  const crgb = hexToRgb(pal.glow);
+  core.addColorStop(0, 'rgba(' + crgb.r + ',' + crgb.g + ',' + crgb.b + ',0.20)');
+  core.addColorStop(1, 'rgba(' + crgb.r + ',' + crgb.g + ',' + crgb.b + ',0)');
+  g.fillStyle = core;
+  g.beginPath(); g.arc(kx, ky, kr, 0, TAU); g.fill();
+  /* dark dust lanes carve structure into the clouds */
+  g.globalCompositeOperation = 'source-over';
+  const drgb = hexToRgb(pal.deep);
+  for (let i = 0; i < 12; i++) {
+    const u = r();
+    const x = (0.1 + u * 0.8) * cw;
+    const y = (0.4 + Math.sin(u * 4.1) * 0.18 + (r() - 0.5) * 0.14) * ch;
+    const rad = (0.05 + r() * 0.13) * span;
+    const gr = g.createRadialGradient(x, y, 0, x, y, rad);
+    gr.addColorStop(0, 'rgba(' + drgb.r + ',' + drgb.g + ',' + drgb.b + ',0.26)');
+    gr.addColorStop(1, 'rgba(' + drgb.r + ',' + drgb.g + ',' + drgb.b + ',0)');
+    g.fillStyle = gr;
+    g.beginPath(); g.arc(x, y, rad, 0, TAU); g.fill();
+  }
+  nebula = c;
+}
+/* ------------------------------------------------------------------ */
+/* Starfield / dust                                                   */
+/* ------------------------------------------------------------------ */
+function buildStars() {
+  const area = Math.max(1, W * H);
+  const n = Math.round(clamp(area / 7000, 100, 520) * P.stars * (V.reduced ? 0.65 : 1));
+  const r = mulberry32(2207 + n * 3);
+  stars = [];
+  for (let i = 0; i < n; i++) {
+    const z = r() < 0.55 ? 0.35 : r() < 0.8 ? 0.65 : 1;
+    stars.push({
+      x: r() * W,
+      y: r() * H,
+      z: z,
+      rad: 0.35 + z * 1.25 * (0.4 + r() * 0.9),
+      ph: r() * TAU,
+      sp: 0.4 + r() * 1.6,
+      warm: r() < 0.18,
+    });
+  }
+}
+function buildDust() {
+  const pal = palette();
+  const n = Math.round(clamp((W * H) / 26000, 30, 90) * (V.reduced ? 0.5 : 1));
+  const r = mulberry32(6607);
+  dust = [];
+  for (let i = 0; i < n; i++) {
+    dust.push({
+      x: r() * W,
+      y: r() * H,
+      z: 0.3 + r() * 0.7,
+      size: 1.4 + r() * 3.6,
+      ph: r() * TAU,
+      sp: 0.25 + r() * 0.6,
+      col: r() < 0.5 ? pal.pale : pal.glow,
+    });
+  }
+}
+function drawStars(t, dt) {
+  const pal = palette();
+  for (let i = 0; i < stars.length; i++) {
+    const s = stars[i];
+    s.x += (1.2 + s.z * 6) * dt * (V.reduced ? 0.4 : 1);
+    if (s.x > W + 4) s.x = -4;
+    const tw = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * s.sp + s.ph));
+    ctx.globalAlpha = tw * (0.35 + s.z * 0.6);
+    ctx.fillStyle = s.warm ? '#ffe6c4' : mixHex('#dceaff', pal.pale, 0.25 + s.z * 0.25);
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.rad, 0, TAU);
+    ctx.fill();
+    if (s.z > 0.9 && s.rad > 1.2) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = tw * 0.22;
+      const gs = s.rad * 12;
+      ctx.drawImage(glowFor(pal.pale), s.x - gs / 2, s.y - gs / 2, gs, gs);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+function drawDust(t, dt) {
+  if (!dust.length) return;
+  const pal = palette();
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < dust.length; i++) {
+    const d = dust[i];
+    const nx = dustNoise(d.x * 0.0018, d.y * 0.0018 + t * 0.05);
+    const ny = dustNoise(d.x * 0.0018 + 41.3, d.y * 0.0018 - t * 0.04);
+    d.x += (nx * 10 + 2.4) * d.z * dt;
+    d.y += (ny * 7 - 1.2) * d.z * dt;
+    if (d.x < -10) d.x = W + 10;
+    if (d.x > W + 10) d.x = -10;
+    if (d.y < -10) d.y = H + 10;
+    if (d.y > H + 10) d.y = -10;
+    const pulse = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * d.sp + d.ph));
+    const gs = d.size * 5;
+    ctx.globalAlpha = pulse * 0.16 * d.z;
+    ctx.drawImage(glowFor(d.col), d.x - gs / 2, d.y - gs / 2, gs, gs);
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+/* ------------------------------------------------------------------ */
+/* Planets from icons                                                 */
+/* ------------------------------------------------------------------ */
+function drawPlanets(t) {
+  if (!P.planets) return;
+  const pal = palette();
+  const icons = V.icons.list;
+  for (let i = 0; i < icons.length; i++) {
+    const ic = icons[i];
+    const fade = ic.gone ? 1 - clamp((V.icons._clock - ic.gone) / 1.6, 0, 1) : 1;
+    if (fade <= 0.01) continue;
+    const appear = smoothstep(0, 1, 1 - ic.fresh);
+    const cx = ic.x + ic.w / 2;
+    const cy = ic.y + ic.h / 2;
+    const seed = mulberry32((ic.seed ^ 0x9d2c5680) >>> 0);
+    const rot = seed() * TAU;
+    const tone = 0.25 + seed() * 0.65;
+    const orbitR = 1.55 + seed() * 0.5;
+    const c1 = mixHex(pal.glow, pal.pale, 0.35 + seed() * 0.5);
+    const c2 = mixHex(pal.core, pal.glow, tone);
+    const c3 = mixHex(pal.deep, pal.core, 0.7);
+    const breath = 1 + Math.sin(t * 0.62 + (ic.seed % 97)) * 0.022;
+    const r = Math.max(9, ic.w * 0.62) * breath * (0.7 + appear * 0.3);
+    const orbit = r * orbitR;
+    const flat = 0.26 + seed() * 0.12;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(rot);
+    ctx.globalAlpha = fade * (0.55 + appear * 0.45);
+    /* orbit ring */
+    ctx.strokeStyle = rgba(pal.pale, 0.16);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, orbit, orbit * flat, 0, 0, TAU);
+    ctx.stroke();
+    /* moon */
+    const ma = t * 0.55 + seed() * TAU;
+    const mx = Math.cos(ma) * orbit;
+    const my = Math.sin(ma) * orbit * flat;
+    const mr = Math.max(1.8, r * 0.13);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = fade * 0.30;
+    ctx.drawImage(glowFor(pal.pale), mx - mr * 3, my - mr * 3, mr * 6, mr * 6);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = fade;
+    ctx.fillStyle = mixHex(pal.pale, '#ffffff', 0.35);
+    ctx.beginPath();
+    ctx.arc(mx, my, mr, 0, TAU);
+    ctx.fill();
+    /* atmosphere */
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = fade * (0.14 + 0.05 * Math.sin(t * 0.9 + ic.seed % 13));
+    const gs = r * 5;
+    ctx.drawImage(glowFor(pal.glow), -gs / 2, -gs / 2, gs, gs);
+    ctx.globalCompositeOperation = 'source-over';
+    /* body */
+    ctx.globalAlpha = fade;
+    const body = ctx.createRadialGradient(-r * 0.35, -r * 0.38, r * 0.08, 0, 0, r * 1.05);
+    body.addColorStop(0, c1);
+    body.addColorStop(0.5, c2);
+    body.addColorStop(1, c3);
+    ctx.fillStyle = body;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, TAU);
+    ctx.fill();
+    /* seeded bands */
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, TAU);
+    ctx.clip();
+    ctx.globalAlpha = fade * 0.20;
+    ctx.fillStyle = mixHex(c1, c3, 0.4);
+    ctx.beginPath();
+    ctx.ellipse(0, -r * 0.24, r * 1.1, r * 0.18, -0.12, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = mixHex(c3, pal.deep, 0.5);
+    ctx.beginPath();
+    ctx.ellipse(0, r * 0.34, r * 1.1, r * 0.24, 0.16, 0, TAU);
+    ctx.fill();
+    const shade = ctx.createRadialGradient(r * 0.42, r * 0.34, r * 0.1, r * 0.2, r * 0.2, r * 1.35);
+    shade.addColorStop(0, 'rgba(2,2,10,0)');
+    shade.addColorStop(0.55, 'rgba(2,2,10,0.18)');
+    shade.addColorStop(1, 'rgba(2,2,10,0.62)');
+    ctx.globalAlpha = fade;
+    ctx.fillStyle = shade;
+    ctx.fillRect(-r, -r, r * 2, r * 2);
+    ctx.restore();
+    /* lit rim */
+    ctx.globalAlpha = fade * 0.55;
+    ctx.strokeStyle = rgba(pal.pale, 0.5);
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.arc(0, 0, r - 0.6, Math.PI * 1.05, Math.PI * 1.75);
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+/* ------------------------------------------------------------------ */
+/* Meteors                                                            */
+/* ------------------------------------------------------------------ */
+function updateMeteors(dt, t) {
+  if (!P.meteors) { meteor = null; return; }
+  if (!meteor && t > nextMeteor) {
+    meteor = {
+      x: W * (0.1 + Math.random() * 0.85),
+      y: H * (0.04 + Math.random() * 0.28),
+      vx: -(260 + Math.random() * 320),
+      vy: 150 + Math.random() * 190,
+      life: 0,
+      max: 0.7 + Math.random() * 0.5,
+    };
+    nextMeteor = t + 4 + Math.random() * 11;
+  }
+  if (!meteor) return;
+  meteor.x += meteor.vx * dt;
+  meteor.y += meteor.vy * dt;
+  meteor.life += dt;
+  if (meteor.life > meteor.max) meteor = null;
+}
+function drawMeteors() {
+  if (!meteor) return;
+  const pal = palette();
+  const fade = Math.sin(Math.PI * clamp(meteor.life / meteor.max, 0, 1));
+  const tx = meteor.x - meteor.vx * 0.16;
+  const ty = meteor.y - meteor.vy * 0.16;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createLinearGradient(meteor.x, meteor.y, tx, ty);
+  g.addColorStop(0, rgba(pal.pale, 0.85 * fade));
+  g.addColorStop(0.25, rgba(pal.glow, 0.35 * fade));
+  g.addColorStop(1, rgba(pal.glow, 0));
+  ctx.strokeStyle = g;
+  ctx.lineWidth = 1.8;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(meteor.x, meteor.y);
+  ctx.lineTo(tx, ty);
+  ctx.stroke();
+  ctx.globalAlpha = fade * 0.7;
+  ctx.drawImage(glowFor(pal.pale), meteor.x - 14, meteor.y - 14, 28, 28);
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+/* ------------------------------------------------------------------ */
+/* Layout                                                             */
+/* ------------------------------------------------------------------ */
+function rebuild() {
+  W = view.w;
+  H = view.h;
+  buildNebula();
+  buildStars();
+  buildDust();
+}
+view.onResize(rebuild);
+rebuild();
+/* ------------------------------------------------------------------ */
+/* Frame                                                              */
+/* ------------------------------------------------------------------ */
+V.loop((dt, t) => {
+  const pal = palette();
+  V.bg(ctx, W, H, [pal.deep, mixHex(pal.deep, pal.mid, 0.7), pal.mid]);
+  if (nebula && P.nebula > 0.01) {
+    ctx.globalAlpha = Math.min(1, P.nebula * 1.15);
+    ctx.drawImage(nebula, 0, 0, W, H);
+    ctx.globalAlpha = 1;
+  }
+  drawStars(t, dt);
+  drawDust(t, dt);
+  drawPlanets(t);
+  updateMeteors(dt, t);
+  drawMeteors();
+  /* deep-space falloff at the edges */
+  const edge = ctx.createLinearGradient(0, 0, 0, H);
+  edge.addColorStop(0, 'rgba(2,2,8,0.24)');
+  edge.addColorStop(0.5, 'rgba(2,2,8,0)');
+  edge.addColorStop(1, 'rgba(2,2,8,0.28)');
+  ctx.fillStyle = edge;
+  ctx.fillRect(0, 0, W, H);
+  V.vignette(ctx, W, H, 0.55);
+  V.grain(ctx, W, H, 0.04);
+});
+</script>
+</body>
+</html>

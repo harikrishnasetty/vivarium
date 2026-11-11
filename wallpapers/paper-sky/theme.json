@@ -1,0 +1,16 @@
+{
+  "id": "paper-sky",
+  "name": "Paper Sky",
+  "category": "Landscapes",
+  "tagline": "A folded-paper world that gives your icons a home.",
+  "desc": "Flat paper clouds drift over a creased paper sea while origami cranes glide past. Every desktop icon becomes a little floating island with a paper slab, folded trees or a sail, and a soft shadow on the water.",
+  "tags": ["landscape", "paper", "origami", "sky", "adaptive"],
+  "thumb": { "from": "#dfe9e4", "to": "#7ba7a0", "accent": "#f2c9b0" },
+  "params": [
+    { "group": "Life", "key": "cranes", "label": "Paper cranes", "type": "range", "min": 0, "max": 6, "step": 1, "default": 3 },
+    { "group": "Sky", "key": "clouds", "label": "Clouds", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.6 },
+    { "group": "Sky", "key": "wind", "label": "Wind", "type": "range", "min": 0, "max": 2, "step": 0.1, "default": 1 },
+    { "group": "Texture", "key": "grain", "label": "Paper grain", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.5 },
+    { "group": "Look", "key": "palette", "label": "Palette", "type": "select", "options": [["dawn", "Dawn"], ["mint", "Mint"], ["dusk", "Dusk"]], "default": "dawn" }
+  ]
+}

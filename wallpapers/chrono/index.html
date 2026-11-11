@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chrono — Vivarium</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1214; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script type="module">
+import { Vivarium, TAU, clamp, lerp, smoothstep, makeNoise2D, mulberry32, rgba } from '../_runtime/engine.js';
+
+const V = await Vivarium.ready;
+const view = V.canvas('stage');
+const ctx = view.ctx;
+
+const DEFAULTS = { style: 'auto', seconds: true, date: true, moon: true, hour24: true };
+let P = Object.assign({}, DEFAULTS, V.params);
+V.on('params', (p) => { P = Object.assign({}, P, p); });
+
+const dustNoise = makeNoise2D(8811);
+let W = 0;
+let H = 0;
+let dust = [];
+
+const STYLES = {
+  light: {
+    bg: ['#f6f2e8', '#e9e2d3', '#ddd4c2'],
+    text: '#23281f',
+    muted: 'rgba(35,40,31,0.55)',
+    faint: 'rgba(35,40,31,0.16)',
+    accent: '#6f8f5c',
+    glow: 'rgba(255,250,232,0.6)',
+    grain: 0.05,
+    vignette: 0.16,
+  },
+  dark: {
+    bg: ['#0b1113', '#111b1e', '#172529'],
+    text: '#e9f2ec',
+    muted: 'rgba(233,242,236,0.52)',
+    faint: 'rgba(233,242,236,0.13)',
+    accent: '#7fd6b0',
+    glow: 'rgba(127,214,176,0.10)',
+    grain: 0.035,
+    vignette: 0.55,
+  },
+  ink: {
+    bg: ['#f3efe4', '#e9e2d2', '#dcd3bf'],
+    text: '#1e1c18',
+    muted: 'rgba(30,28,24,0.55)',
+    faint: 'rgba(30,28,24,0.14)',
+    accent: '#a4453a',
+    glow: 'rgba(255,247,225,0.55)',
+    grain: 0.07,
+    vignette: 0.2,
+  },
+};
+
+function currentStyle() {
+  if (P.style !== 'auto') return STYLES[P.style] || STYLES.dark;
+  const h = V.time.dayFrac * 24;
+  const sr = V.time.sunrise;
+  const ss = V.time.sunset;
+  if (h < sr - 0.6 || h > ss + 0.6) return STYLES.dark;
+  if (Math.abs(h - sr) < 1.2 || Math.abs(h - ss) < 1.2) return STYLES.ink;
+  return STYLES.light;
+}
+
+function rebuild() {
+  W = view.w;
+  H = view.h;
+  const r = mulberry32(6601);
+  dust = [];
+  const n = Math.round((W * H) / 90000);
+  for (let i = 0; i < n; i++) {
+    dust.push({
+      x: r() * W,
+      y: r() * H,
+      rad: 0.6 + r() * 1.5,
+      ph: r() * TAU,
+      sp: 0.2 + r() * 0.6,
+      drift: 4 + r() * 10,
+    });
+  }
+}
+view.onResize(rebuild);
+rebuild();
+
+function drawSpaced(text, x, y, spacing, align) {
+  const chars = Array.from(text);
+  const widths = chars.map((c) => ctx.measureText(c).width);
+  const total = widths.reduce((a, b) => a + b, 0) + spacing * Math.max(0, chars.length - 1);
+  let cx = align === 'center' ? x - total / 2 : align === 'right' ? x - total : x;
+  for (let i = 0; i < chars.length; i++) {
+    ctx.fillText(chars[i], cx, y);
+    cx += widths[i] + spacing;
+  }
+  return total;
+}
+
+function measureSpaced(text, spacing) {
+  const chars = Array.from(text);
+  let total = 0;
+  for (let i = 0; i < chars.length; i++) total += ctx.measureText(chars[i]).width;
+  return total + spacing * Math.max(0, chars.length - 1);
+}
+
+const PHASES = [
+  'New moon', 'Waxing crescent', 'First quarter', 'Waxing gibbous',
+  'Full moon', 'Waning gibbous', 'Last quarter', 'Waning crescent',
+];
+
+function drawMoon(cx, cy, r, color, phase) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, TAU);
+  ctx.fillStyle = color;
+  ctx.fill();
+  const illum = (1 - Math.cos(TAU * phase)) / 2;
+  const shadowW = r * 2 * (1 - illum);
+  if (shadowW > 0.6) {
+    ctx.beginPath();
+    const offset = phase < 0.5 ? -r + shadowW / 2 : r - shadowW / 2;
+    ctx.ellipse(cx + offset, cy, shadowW / 2, r, 0, 0, TAU);
+    ctx.fillStyle = 'rgba(20,24,22,0.55)';
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawIcons(theme, t) {
+  const icons = V.icons.list;
+  for (let i = 0; i < icons.length; i++) {
+    const ic = icons[i];
+    const goneFade = ic.gone ? 1 - clamp((V.icons._clock - ic.gone) / 1.6, 0, 1) : 1;
+    if (goneFade <= 0) continue;
+    const cx = ic.x + ic.w / 2;
+    const cy = ic.y + ic.h / 2;
+    const rr = Math.max(ic.w, ic.h) * 1.05;
+    const g = ctx.createRadialGradient(cx, cy, rr * 0.2, cx, cy, rr);
+    const rgb = theme.accent;
+    g.addColorStop(0, rgba(rgb, 0.10 * goneFade));
+    g.addColorStop(1, rgba(rgb, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, rr, 0, TAU);
+    ctx.fill();
+
+    const by = ic.y + ic.h + 2;
+    const half = ic.w * 0.34;
+    ctx.strokeStyle = rgba(theme.accent, 0.30 * goneFade);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx - half, by);
+    ctx.lineTo(cx + half, by);
+    ctx.stroke();
+    ctx.fillStyle = rgba(theme.accent, 0.5 * goneFade);
+    ctx.beginPath();
+    ctx.arc(cx, by, 1.4, 0, TAU);
+    ctx.fill();
+  }
+}
+
+function drawDust(theme, t) {
+  for (let i = 0; i < dust.length; i++) {
+    const d = dust[i];
+    const x = d.x + Math.sin(t * 0.15 + d.ph) * d.drift * 2;
+    const y = d.y + Math.cos(t * 0.1 + d.ph * 1.7) * d.drift;
+    ctx.globalAlpha = 0.10 + 0.10 * (0.5 + 0.5 * Math.sin(t * 0.5 + d.ph));
+    ctx.fillStyle = theme.text;
+    ctx.beginPath();
+    ctx.arc(x, y, d.rad, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+V.loop((dt, t) => {
+  const theme = currentStyle();
+  const now = new Date();
+  const hh = now.getHours();
+  const mm = now.getMinutes();
+  const ss = now.getSeconds();
+
+  V.bg(ctx, W, H, theme.bg);
+
+  /* soft ambient glow */
+  const gx = W * (0.3 + 0.2 * Math.sin(V.time.dayFrac * TAU));
+  const glow = ctx.createRadialGradient(gx, H * 0.25, 0, gx, H * 0.25, Math.max(W, H) * 0.7);
+  glow.addColorStop(0, theme.glow);
+  glow.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, H);
+
+  drawIcons(theme, t);
+  drawDust(theme, t);
+
+  /* big time */
+  const size = Math.round(clamp(Math.min(W * 0.155, H * 0.30), 74, 260));
+  const hour = P.hour24 ? hh : ((hh + 11) % 12) + 1;
+  const timeText = (hour < 10 ? '0' : '') + hour + ':' + (mm < 10 ? '0' : '') + mm;
+  const secText = (ss < 10 ? '0' : '') + ss;
+  const suffix = P.hour24 ? '' : hh < 12 ? 'AM' : 'PM';
+
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = theme.text;
+  ctx.font = '200 ' + size + 'px "Segoe UI Light", "Segoe UI", system-ui, sans-serif';
+  const timeW = ctx.measureText(timeText).width;
+  let totalW = timeW;
+  let secW = 0;
+  let sufW = 0;
+  if (P.seconds) {
+    ctx.font = '300 ' + Math.round(size * 0.24) + 'px "Segoe UI", system-ui, sans-serif';
+    secW = ctx.measureText(secText).width + Math.round(size * 0.06);
+    totalW += secW;
+  }
+  if (suffix) {
+    ctx.font = '400 ' + Math.round(size * 0.17) + 'px "Segoe UI", system-ui, sans-serif';
+    sufW = ctx.measureText(suffix).width + Math.round(size * 0.05);
+    totalW += sufW;
+  }
+
+  const baseY = H * 0.47;
+  const startX = (W - totalW) / 2;
+
+  ctx.fillStyle = theme.text;
+  ctx.font = '200 ' + size + 'px "Segoe UI Light", "Segoe UI", system-ui, sans-serif';
+  ctx.fillText(timeText, startX, baseY);
+
+  let cursor = startX + timeW;
+  if (P.seconds) {
+    ctx.fillStyle = theme.accent;
+    ctx.font = '300 ' + Math.round(size * 0.24) + 'px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(secText, cursor + Math.round(size * 0.03), baseY);
+    cursor += secW;
+  }
+  if (suffix) {
+    ctx.fillStyle = theme.muted;
+    ctx.font = '400 ' + Math.round(size * 0.17) + 'px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(suffix, cursor + Math.round(size * 0.02), baseY - Math.round(size * 0.02));
+  }
+
+  /* date + week */
+  ctx.textBaseline = 'middle';
+  let y = baseY + size * 0.30;
+  if (P.date) {
+    ctx.font = '400 ' + Math.round(clamp(size * 0.085, 13, 26)) + 'px "Segoe UI", system-ui, sans-serif';
+    ctx.fillStyle = theme.muted;
+    const dateText = now.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+    drawSpaced(dateText, W / 2, y, Math.round(size * 0.018), 'center');
+    y += Math.round(size * 0.115);
+
+    const dayIdx = (now.getDay() + 6) % 7;
+    const gap = Math.round(clamp(size * 0.075, 12, 22));
+    const start = W / 2 - gap * 3;
+    for (let i = 0; i < 7; i++) {
+      const dx = start + i * gap;
+      ctx.beginPath();
+      ctx.arc(dx, y, Math.max(2, size * 0.012), 0, TAU);
+      if (i === dayIdx) {
+        ctx.fillStyle = theme.accent;
+        ctx.fill();
+      } else {
+        ctx.strokeStyle = theme.faint;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+    y += Math.round(size * 0.12);
+  }
+
+  if (P.moon) {
+    const phase = V.time.moonPhase;
+    const r = Math.max(7, size * 0.045);
+    const phaseIdx = Math.round(phase * 8) % 8;
+    const label = PHASES[phaseIdx];
+    ctx.font = '400 ' + Math.round(clamp(size * 0.06, 11, 17)) + 'px "Segoe UI", system-ui, sans-serif';
+    ctx.fillStyle = theme.muted;
+    const labelW = ctx.measureText(label).width;
+    const total = r * 2 + 10 + labelW;
+    const mx = W / 2 - total / 2 + r;
+    drawMoon(mx, y, r, theme.muted, phase);
+    ctx.fillStyle = theme.muted;
+    ctx.textAlign = 'left';
+    ctx.fillText(label, mx + r + 10, y + 1);
+    ctx.textAlign = 'start';
+  }
+
+  V.vignette(ctx, W, H, theme.vignette);
+  V.grain(ctx, W, H, theme.grain);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "id": "nebula-drift",
+  "name": "Nebula Drift",
+  "category": "Landscapes",
+  "tagline": "A slow voyage through a living nebula.",
+  "desc": "Three parallax star layers drift behind fbm-sculpted clouds, with dust motes and occasional meteors. Every desktop icon becomes a small breathing planet with a rim glow, orbit ring and tiny moon.",
+  "tags": ["adaptive", "space", "nebula", "stars", "planets"],
+  "thumb": { "from": "#05030f", "to": "#3b2a6b", "accent": "#7a5cd6" },
+  "params": [
+    { "group": "Space", "key": "nebula", "label": "Nebula clouds", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.6 },
+    { "group": "Space", "key": "stars", "label": "Star density", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.7 },
+    { "group": "Life", "key": "planets", "label": "Icon planets", "type": "toggle", "default": true },
+    { "group": "Life", "key": "meteors", "label": "Shooting stars", "type": "toggle", "default": true },
+    { "group": "Look", "key": "hue", "label": "Palette", "type": "select", "options": [["teal", "Teal"], ["violet", "Violet"], ["ember", "Ember"]], "default": "violet" }
+  ]
+}

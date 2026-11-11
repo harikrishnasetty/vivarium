@@ -1,0 +1,16 @@
+{
+  "id": "isles",
+  "name": "Isles",
+  "category": "Landscapes",
+  "tagline": "A still alpine lake scattered with icon islets.",
+  "desc": "Three snow-capped mountain ranges settle into a mirror-still lake while mist drifts and birds cross the sky. Every desktop icon becomes a small forested islet with a gently bobbing reflection.",
+  "tags": ["adaptive", "mountains", "lake", "mist", "day-night"],
+  "thumb": { "from": "#0b1a24", "to": "#5f8a8a", "accent": "#a8c6a0" },
+  "params": [
+    { "group": "Atmosphere", "key": "mist", "label": "Mist", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.5 },
+    { "group": "Atmosphere", "key": "sky", "label": "Sky", "type": "select", "options": [["auto", "Auto (local time)"], ["day", "Day"], ["dusk", "Dusk"], ["night", "Night"]], "default": "auto" },
+    { "group": "Life", "key": "trees", "label": "Islet trees", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.6 },
+    { "group": "Life", "key": "birds", "label": "Birds", "type": "toggle", "default": true },
+    { "group": "Water", "key": "ripples", "label": "Ripples", "type": "range", "min": 0, "max": 2, "step": 0.1, "default": 1 }
+  ]
+}

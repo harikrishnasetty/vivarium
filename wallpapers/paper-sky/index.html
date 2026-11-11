@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Sky — Vivarium</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #dfe9e4; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script type="module">
+import {
+  Vivarium, TAU, clamp, smoothstep, mulberry32, mixHex, rgba,
+} from '../_runtime/engine.js';
+const V = await Vivarium.ready;
+const view = V.canvas('stage');
+const ctx = view.ctx;
+const DEFAULTS = { cranes: 3, clouds: 0.6, wind: 1, grain: 0.5, palette: 'dawn' };
+let P = Object.assign({}, DEFAULTS, V.params);
+V.on('params', (p) => {
+  const prev = P;
+  P = Object.assign({}, P, p);
+  if (prev.cranes !== P.cranes) buildCranes();
+  if (prev.clouds !== P.clouds) buildClouds();
+  if (prev.palette !== P.palette) { buildSky(); buildSea(); buildWaveTiles(); }
+});
+const PAL = {
+  dawn: { sky: ['#dfe9e4', '#eef1e8', '#fff4e0'], sea: ['#7ba7a0', '#5f8d87'], seaLight: '#a8c6c0',
+    cloud: ['#fffdf6', '#f1eee3', '#cfded8'], accent: '#f2c9b0', cream: '#fff4e0', shadow: '#8aa8a2', hill: ['#c6dad2', '#a8c6c0'] },
+  mint: { sky: ['#e3efe2', '#f0f5e8', '#fbf7e6'], sea: ['#8fb8a2', '#6b9a86'], seaLight: '#bcd9c6',
+    cloud: ['#fdfff7', '#eef5e8', '#cfdfd2'], accent: '#f6dfae', cream: '#fbf7e6', shadow: '#9dbcaa', hill: ['#d3e6d6', '#bcd9c6'] },
+  dusk: { sky: ['#cdd3dd', '#e6dfe2', '#f7e7d3'], sea: ['#6f7f99', '#56647d'], seaLight: '#9aa6bb',
+    cloud: ['#f7eef0', '#e6d9df', '#c3c0d0'], accent: '#e6b6a0', cream: '#f7e7d3', shadow: '#8a90a8', hill: ['#b9c0cf', '#9aa6bb'] },
+};
+let W = 0, H = 0, horizon = 0;
+let clouds = [], cranes = [], bgLayer = null, seaLayer = null, waveTiles = [];
+const TILE_W = 900, TILE_H = 70;
+const pal = () => PAL[P.palette] || PAL.dawn;
+/* flat [x,y,...] polygon helpers */
+function fill(c, pts, color, alpha) {
+  c.globalAlpha = alpha == null ? 1 : alpha;
+  c.fillStyle = color;
+  c.beginPath();
+  c.moveTo(pts[0], pts[1]);
+  for (let i = 2; i < pts.length; i += 2) c.lineTo(pts[i], pts[i + 1]);
+  c.closePath();
+  c.fill();
+  c.globalAlpha = 1;
+}
+function strokePoly(c, pts, color, width, alpha) {
+  c.globalAlpha = alpha == null ? 1 : alpha;
+  c.strokeStyle = color;
+  c.lineWidth = width;
+  c.beginPath();
+  c.moveTo(pts[0], pts[1]);
+  for (let i = 2; i < pts.length; i += 2) c.lineTo(pts[i], pts[i + 1]);
+  c.closePath();
+  c.stroke();
+  c.globalAlpha = 1;
+}
+/* ---------------- pre-rendered sky ---------------- */
+function buildSky() {
+  if (!W || !H) return;
+  const p = pal();
+  bgLayer = document.createElement('canvas');
+  bgLayer.width = W;
+  bgLayer.height = H;
+  const g = bgLayer.getContext('2d');
+  V.bg(g, W, H, p.sky);
+  const sx = W * 0.72, sy = horizon - H * 0.26, sr = Math.max(22, Math.min(W, H) * 0.055);
+  g.fillStyle = rgba(p.accent, 0.22);
+  g.beginPath(); g.arc(sx, sy, sr * 2.8, 0, TAU); g.fill();
+  g.fillStyle = rgba(p.cream, 0.92);
+  g.beginPath(); g.arc(sx, sy, sr, 0, TAU); g.fill();
+  g.fillStyle = rgba(p.accent, 0.42);
+  g.beginPath(); g.arc(sx, sy, sr, -0.8, 1.7); g.lineTo(sx, sy); g.closePath(); g.fill();
+  const r = mulberry32(2211);
+  const ranges = [
+    { base: horizon - H * 0.02, amp: H * 0.075, color: p.hill[0], step: 0.11 },
+    { base: horizon + H * 0.012, amp: H * 0.05, color: p.hill[1], step: 0.085 },
+  ];
+  for (const rg of ranges) {
+    const n = Math.ceil(1 / rg.step) + 1;
+    const pts = [-20, H];
+    for (let i = 0; i <= n; i++) {
+      const x = (i / n) * (W + 40) - 20;
+      pts.push(x, rg.base - (i % 2 ? 0.45 : 1) * (0.55 + r() * 0.65) * rg.amp);
+    }
+    pts.push(W + 20, H);
+    fill(g, pts, rg.color);
+    g.fillStyle = rgba(p.cream, 0.2);
+    for (let i = 1; i < n; i += 2) {
+      const x0 = ((i - 1) / n) * (W + 40) - 20, x1 = ((i + 1) / n) * (W + 40) - 20;
+      g.beginPath(); g.moveTo(x0, rg.base - rg.amp * 0.15);
+      g.lineTo((x0 + x1) / 2, rg.base - rg.amp * 1.15); g.lineTo(x1, rg.base - rg.amp * 0.15);
+      g.closePath(); g.fill();
+    }
+  }
+}
+/* ---------------- pre-rendered folded sea ---------------- */
+function buildSea() {
+  if (!W || !H) return;
+  const p = pal();
+  seaLayer = document.createElement('canvas');
+  seaLayer.width = W;
+  seaLayer.height = H;
+  const g = seaLayer.getContext('2d');
+  const grad = g.createLinearGradient(0, horizon, 0, H);
+  grad.addColorStop(0, mixHex(p.sea[0], p.cream, 0.18));
+  grad.addColorStop(0.4, p.sea[0]);
+  grad.addColorStop(1, p.sea[1]);
+  g.fillStyle = grad;
+  g.fillRect(0, horizon, W, H - horizon);
+  g.fillStyle = rgba(p.cream, 0.55);
+  g.fillRect(0, horizon - 1, W, 1.6);
+  const r = mulberry32(7701);
+  for (let i = 0; i < 12; i++) {
+    const u = i / 12;
+    const y0 = horizon + Math.pow(u, 1.4) * (H - horizon) * 0.99;
+    const amp = 2 + u * 12, depth = 4 + u * 20;
+    const step = Math.max(22, W / 36), period = 170 + r() * 220, phase = r() * TAU;
+    let prevX = -step, prevY = y0 + Math.sin(prevX / period * TAU + phase) * amp;
+    for (let x = 0; x <= W + step; x += step) {
+      const yy = y0 + Math.sin(x / period * TAU + phase) * amp;
+      fill(g, [prevX, prevY, x, yy, x, yy + depth, prevX, prevY + depth],
+        yy < prevY ? rgba(p.seaLight, 0.34) : rgba(p.sea[1], 0.3));
+      if (i % 3 === 0 && yy < prevY) {
+        g.strokeStyle = rgba(p.cream, 0.22);
+        g.lineWidth = 1;
+        g.beginPath(); g.moveTo(prevX, prevY); g.lineTo(x, yy); g.stroke();
+      }
+      prevX = x; prevY = yy;
+    }
+  }
+}
+function makeWaveTile(phase) {
+  const p = pal();
+  const c = document.createElement('canvas');
+  c.width = TILE_W;
+  c.height = TILE_H;
+  const g = c.getContext('2d');
+  const period = 180, step = period / 8, top = TILE_H * 0.5, amp = TILE_H * 0.17, depth = TILE_H * 0.2;
+  let prevX = 0, prevY = top + Math.sin(phase) * amp;
+  for (let x = step; x <= TILE_W + 0.01; x += step) {
+    const yy = top + Math.sin(x / period * TAU + phase) * amp;
+    fill(g, [prevX, prevY, x, yy, x, yy + depth, prevX, prevY + depth],
+      yy < prevY ? rgba(p.cream, 0.3) : rgba(p.sea[1], 0.26));
+    prevX = x; prevY = yy;
+  }
+  g.strokeStyle = rgba(p.cream, 0.4);
+  g.lineWidth = 1;
+  g.beginPath();
+  for (let x = 0; x <= TILE_W; x += 4) {
+    const yy = top + Math.sin(x / period * TAU + phase) * amp;
+    if (x === 0) g.moveTo(x, yy); else g.lineTo(x, yy);
+  }
+  g.stroke();
+  return c;
+}
+function buildWaveTiles() {
+  waveTiles = [makeWaveTile(0.4), makeWaveTile(2.1)];
+}
+/* ---------------- clouds and cranes ---------------- */
+function cloudShape(r) {
+  const base = [
+    -1.0, 0.18, -0.82, -0.1, -0.58, -0.34, -0.26, -0.52, 0.04, -0.58,
+    0.34, -0.46, 0.62, -0.24, 0.86, -0.02, 1.0, 0.2, 0.66, 0.38,
+    0.22, 0.44, -0.28, 0.42, -0.72, 0.34,
+  ];
+  const pts = [];
+  for (let i = 0; i < base.length; i += 2) pts.push(base[i] + (r() - 0.5) * 0.09, base[i + 1] + (r() - 0.5) * 0.09);
+  const light = [];
+  for (let i = 2; i <= 12; i += 2) light.push(pts[i], pts[i + 1]);
+  light.push(0.02, 0.06);
+  const dark = [];
+  for (let i = 12; i <= 22; i += 2) dark.push(pts[i], pts[i + 1]);
+  dark.push(0.02, 0.08);
+  return { pts, light, dark };
+}
+function buildClouds() {
+  if (!W || !H) return;
+  const total = Math.round(P.clouds * 14 * (V.reduced ? 0.6 : 1));
+  const r = mulberry32(4409 + total * 7);
+  clouds = [];
+  for (let i = 0; i < total; i++) {
+    clouds.push({
+      x: r() * (W + 300) - 150, y: (0.06 + r() * 0.33) * H,
+      size: Math.min(W, H) * (0.055 + r() * 0.065),
+      sp: 3 + r() * 9, phase: r() * TAU, shape: cloudShape(r),
+    });
+  }
+}
+function buildCranes() {
+  if (!W || !H) return;
+  const total = Math.round(P.cranes * (V.reduced ? 0.6 : 1));
+  const r = mulberry32(8803 + total * 11);
+  cranes = [];
+  for (let i = 0; i < total; i++) {
+    cranes.push({
+      y: (0.11 + r() * 0.32) * H, sp: 16 + r() * 24,
+      dir: r() < 0.5 ? -1 : 1, scale: 0.8 + r() * 0.6,
+      ph: r() * TAU, off: r() * (W + 320),
+    });
+  }
+}
+/* ---------------- layout ---------------- */
+function rebuild() {
+  W = view.w;
+  H = view.h;
+  horizon = H * 0.58;
+  buildSky();
+  buildSea();
+  buildWaveTiles();
+  buildClouds();
+  buildCranes();
+}
+view.onResize(rebuild);
+rebuild();
+const shadowSprite = (function () {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(64, 64, 0, 64, 64, 62);
+  grad.addColorStop(0, 'rgba(54,78,74,0.5)');
+  grad.addColorStop(1, 'rgba(54,78,74,0)');
+  g.save();
+  g.translate(64, 64); g.scale(1, 0.48); g.translate(-64, -64);
+  g.fillStyle = grad;
+  g.beginPath(); g.arc(64, 64, 62, 0, TAU); g.fill();
+  g.restore();
+  return c;
+})();
+/* ---------------- dynamic layers ---------------- */
+function drawClouds(t) {
+  const p = pal();
+  const span = W + 420;
+  for (let i = 0; i < clouds.length; i++) {
+    const c = clouds[i];
+    let x = (c.x + t * c.sp * P.wind) % span;
+    if (x < 0) x += span;
+    x -= 210;
+    const y = c.y + Math.sin(t * 0.24 + c.phase) * 4;
+    const s = c.size, sh = c.shape;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(s, s);
+    ctx.save();
+    ctx.translate(0.1, 0.13);
+    fill(ctx, sh.pts, rgba(p.shadow, 0.28));
+    ctx.restore();
+    fill(ctx, sh.pts, p.cloud[1]);
+    fill(ctx, sh.light, p.cloud[0]);
+    fill(ctx, sh.dark, rgba(p.cloud[2], 0.85));
+    strokePoly(ctx, sh.pts, rgba(p.cream, 0.5), 1 / s);
+    ctx.restore();
+  }
+}
+function drawCrane(x, y, s, dir, t, ph) {
+  const p = pal();
+  const flap = Math.sin(t * 2.4 + ph);
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(dir * s, s);
+  ctx.rotate(Math.sin(t * 0.6 + ph) * 0.05);
+  fill(ctx, [-4, -2, 6, -24 - flap * 5, 14, -3], p.cloud[2]);
+  fill(ctx, [-12, 0, -26, -9, -24, 3], p.accent);
+  fill(ctx, [-14, 0, -2, -6, 10, -2, -2, 6], p.cream);
+  fill(ctx, [7, -2, 22, -13, 24, -9, 10, 3], p.cream);
+  fill(ctx, [22, -13, 28, -11, 23, -8], p.accent);
+  fill(ctx, [-3, 1, 8, -16 - flap * 8, 13, -1], p.cloud[0]);
+  ctx.strokeStyle = rgba(p.shadow, 0.4);
+  ctx.lineWidth = 0.7;
+  ctx.beginPath();
+  ctx.moveTo(-14, 0); ctx.lineTo(10, -2);
+  ctx.moveTo(-2, -6); ctx.lineTo(-2, 6);
+  ctx.stroke();
+  ctx.restore();
+}
+function drawWaves(t) {
+  const y1 = horizon + (H - horizon) * 0.2;
+  const y2 = horizon + (H - horizon) * 0.58;
+  const off1 = (t * 9 * P.wind) % TILE_W;
+  const off2 = (t * 16 * P.wind) % TILE_W;
+  ctx.save();
+  ctx.globalAlpha = 0.85;
+  for (let x = -off1; x < W; x += TILE_W) ctx.drawImage(waveTiles[0], x, y1 - TILE_H * 0.5);
+  ctx.globalAlpha = 0.7;
+  for (let x = -off2; x < W; x += TILE_W) ctx.drawImage(waveTiles[1], x, y2 - TILE_H * 0.5);
+  ctx.restore();
+}
+function drawIslands(t) {
+  const p = pal();
+  const icons = V.icons.list;
+  for (let i = 0; i < icons.length; i++) {
+    const ic = icons[i];
+    const fade = ic.gone ? 1 - clamp((V.icons._clock - ic.gone) / 1.6, 0, 1) : 1;
+    if (fade <= 0) continue;
+    const grow = smoothstep(0, 1, 1 - ic.fresh);
+    const cx = ic.x + ic.w * 0.5;
+    const bob = Math.sin(t * 0.9 + (ic.seed % 100)) * 1.6;
+    const rx = ic.w * (0.6 + 0.18 * grow);
+    const ry = Math.max(7, ic.w * 0.16);
+    const by = ic.y + ic.h - 4 + bob;
+    ctx.globalAlpha = 0.34 * fade * grow;
+    ctx.drawImage(shadowSprite, cx - rx * 1.35, by - ry * 0.2, rx * 2.7, ry * 2.6);
+    ctx.globalAlpha = 1;
+    fill(ctx, [-rx, 0, -rx * 0.55, -ry, rx * 0.55, -ry, rx, 0, rx * 0.6, ry, -rx * 0.6, ry],
+      mixHex(p.sea[1], p.cream, 0.12), fade);
+    fill(ctx, [-rx, 0, -rx * 0.55, -ry, rx * 0.55, -ry, rx, 0, 0, ry * 0.24],
+      mixHex(p.cream, p.seaLight, 0.22), fade);
+    fill(ctx, [-rx, 0, 0, ry * 0.24, rx, 0, rx * 0.6, ry, -rx * 0.6, ry],
+      mixHex(p.sea[0], p.sea[1], 0.55), fade);
+    ctx.save();
+    ctx.translate(cx, by);
+    ctx.strokeStyle = rgba(p.shadow, 0.3);
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(-rx, 0); ctx.lineTo(0, ry * 0.24); ctx.lineTo(rx, 0); ctx.stroke();
+    const ty = -ry * 0.5;
+    if (ic.seed % 3 === 0) {
+      const th = ry * 2.4 + 8;
+      ctx.strokeStyle = rgba(p.shadow, 0.7);
+      ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.moveTo(0, ty); ctx.lineTo(0, ty - th); ctx.stroke();
+      fill(ctx, [1, ty - th * 0.95, 1, ty - 3, th * 0.52, ty - 5], p.cream, fade);
+      fill(ctx, [-1, ty - th * 0.8, -1, ty - 4, -th * 0.4, ty - 6], p.accent, fade * 0.85);
+    } else {
+      const n = 2 + (ic.seed % 2);
+      for (let k = 0; k < n; k++) {
+        const tx = (k - (n - 1) / 2) * rx * 0.42 + ((ic.seed >> (k * 3)) % 9) - 4;
+        const th = ry * 1.5 + (k % 2) * ry * 0.5 + 5;
+        const tw = Math.max(3, rx * 0.14), topY = ty - th;
+        fill(ctx, [tx, topY, tx - tw, ty, tx, ty], mixHex(p.sea[1], p.shadow, 0.25), fade);
+        fill(ctx, [tx, topY, tx + tw, ty, tx, ty], mixHex(p.seaLight, p.cream, 0.4), fade);
+        ctx.fillStyle = rgba(p.shadow, 0.7);
+        ctx.fillRect(tx - 0.7, ty - 1, 1.4, 4);
+      }
+    }
+    ctx.restore();
+    ctx.globalAlpha = 0.28 * fade;
+    ctx.strokeStyle = rgba(p.cream, 0.8);
+    ctx.lineWidth = 1;
+    for (let q = 0; q < 2; q++) {
+      ctx.beginPath();
+      ctx.ellipse(cx, by + ry * (1.05 + q * 0.4), rx * (1.02 + q * 0.22), ry * 0.32, 0, 0, TAU);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+/* ---------------- frame ---------------- */
+V.loop((dt, t) => {
+  if (!bgLayer || !seaLayer) return;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.drawImage(bgLayer, 0, 0, W, H);
+  drawClouds(t);
+  const sc = clamp(H / 1080, 0.7, 1.5), span = W + 320;
+  for (let i = 0; i < cranes.length; i++) {
+    const c = cranes[i];
+    let travel = (t * c.sp * P.wind + c.off) % span;
+    if (travel < 0) travel += span;
+    const x = c.dir > 0 ? travel - 160 : W + 160 - travel;
+    const y = c.y + Math.sin(t * 0.7 + c.ph) * H * 0.03;
+    drawCrane(x, y, sc * c.scale, c.dir, t, c.ph);
+  }
+  ctx.drawImage(seaLayer, 0, horizon, W, H - horizon, 0, horizon, W, H - horizon);
+  drawWaves(t);
+  drawIslands(t);
+  V.vignette(ctx, W, H, 0.22);
+  V.grain(ctx, W, H, 0.02 + P.grain * 0.075);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "id": "emberfall",
+  "name": "Emberfall",
+  "category": "Landscapes",
+  "tagline": "Autumn light, drifting leaves, warm shadows.",
+  "desc": "A golden-hour woodland of layered ridges and round-canopied trees. Leaves ride the wind, spiral up around your desktop icons and settle at their feet while the light follows your local clock.",
+  "tags": ["adaptive", "autumn", "woodland", "golden-hour", "leaves"],
+  "thumb": { "from": "#2a0f0a", "to": "#f2a65a", "accent": "#ffe8c2" },
+  "params": [
+    { "group": "Woodland", "key": "leaves", "label": "Falling leaves", "type": "range", "min": 0, "max": 160, "step": 5, "default": 90 },
+    { "group": "Woodland", "key": "birds", "label": "Bird flocks", "type": "toggle", "default": true },
+    { "group": "Air", "key": "wind", "label": "Wind", "type": "range", "min": 0, "max": 2, "step": 0.1, "default": 1 },
+    { "group": "Air", "key": "haze", "label": "Haze", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.45 },
+    { "group": "Light", "key": "light", "label": "Light", "type": "select", "options": [["auto", "Auto (local time)"], ["golden", "Golden hour"], ["noon", "Noon"], ["dusk", "Dusk"]], "default": "auto" }
+  ]
+}

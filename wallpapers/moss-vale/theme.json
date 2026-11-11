@@ -1,0 +1,16 @@
+{
+  "id": "moss-vale",
+  "name": "Moss Vale",
+  "category": "Landscapes",
+  "tagline": "A misty forest that breathes with your icons.",
+  "desc": "Layered pine ridges, drifting fog and fireflies that gather around your desktop icons. The sky follows your local clock, or you can lock it to day, dusk or night.",
+  "tags": ["adaptive", "day-night", "nature", "forest"],
+  "thumb": { "from": "#071a18", "to": "#7fae6a", "accent": "#d9f2a0" },
+  "params": [
+    { "group": "Life", "key": "fireflies", "label": "Fireflies", "type": "range", "min": 0, "max": 200, "step": 5, "default": 80 },
+    { "group": "Life", "key": "deer", "label": "Wandering deer", "type": "toggle", "default": true },
+    { "group": "Atmosphere", "key": "mist", "label": "Mist", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.6 },
+    { "group": "Atmosphere", "key": "sky", "label": "Sky", "type": "select", "options": [["auto", "Auto (local time)"], ["day", "Day"], ["dusk", "Dusk"], ["night", "Night"]], "default": "auto" },
+    { "group": "Motion", "key": "sway", "label": "Tree sway", "type": "range", "min": 0, "max": 2, "step": 0.1, "default": 1 }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "id": "image",
+  "name": "Image",
+  "category": "Media",
+  "tagline": "A still photo with a slow, cinematic drift.",
+  "desc": "Turns a single photo into a living wallpaper. Ken Burns panning and zoom keep the frame moving without ever looping visibly. Files are read in place and never copied or uploaded.",
+  "tags": ["media", "image", "photo", "ken burns"],
+  "thumb": { "from": "#140f0a", "to": "#6b5a3e", "accent": "#e8c98f" },
+  "params": [
+    { "group": "Motion", "key": "zoom", "label": "Zoom", "type": "range", "min": 1, "max": 1.6, "step": 0.01, "default": 1.18 },
+    { "group": "Motion", "key": "drift", "label": "Drift", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.6 },
+    { "group": "Motion", "key": "motion", "label": "Speed", "type": "range", "min": 0, "max": 2, "step": 0.05, "default": 1 },
+    { "group": "Look", "key": "dim", "label": "Dim", "type": "range", "min": 0, "max": 0.8, "step": 0.05, "default": 0.1 },
+    { "group": "Look", "key": "grain", "label": "Film grain", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.18 },
+    { "group": "Look", "key": "vignette", "label": "Vignette", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.4 }
+  ]
+}

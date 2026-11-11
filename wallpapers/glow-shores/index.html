@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glow Shores — Vivarium</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #02101d; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script type="module">
+import {
+  Vivarium, TAU, clamp, smoothstep, makeNoise2D, fbm,
+  mulberry32, hexToRgb, mixHex, rgba,
+} from '../_runtime/engine.js';
+
+const V = await Vivarium.ready;
+const view = V.canvas('stage');
+const ctx = view.ctx;
+
+const DEFAULTS = { glow: 0.7, tide: 0.5, stars: 0.6, waves: 1, moon: true };
+let P = Object.assign({}, DEFAULTS, V.params);
+V.on('params', (p) => {
+  P = Object.assign({}, P, p);
+});
+
+const waveNoise = makeNoise2D(9103);
+const sparkNoise = makeNoise2D(4407);
+
+let W = 0;
+let H = 0;
+let horizon = 0;
+let waterBottom = 0;
+let sand = null;
+let stars = [];
+let foam = [];
+let sparks = [];
+let glowTeal = null;
+let glowMint = null;
+let moonSprite = null;
+let starSprite = null;
+let meteor = { active: false, next: 5 + Math.random() * 9, t0: 0, dur: 1, x: 0, y: 0, len: 0, ang: 0 };
+
+const BANDS = 6;
+
+function makeGlowSprite(color, size) {
+  const s = size || 128;
+  const c = document.createElement('canvas');
+  c.width = s;
+  c.height = s;
+  const g = c.getContext('2d');
+  const rgb = hexToRgb(color);
+  const grad = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  grad.addColorStop(0, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',1)');
+  grad.addColorStop(0.2, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.55)');
+  grad.addColorStop(0.55, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.14)');
+  grad.addColorStop(1, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, s, s);
+  return c;
+}
+
+function makeMoonSprite() {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(54, 52, 4, 64, 64, 62);
+  grad.addColorStop(0, '#eafff8');
+  grad.addColorStop(0.7, '#bfffe9');
+  grad.addColorStop(1, '#8fd8c8');
+  g.fillStyle = grad;
+  g.beginPath();
+  g.arc(64, 64, 62, 0, TAU);
+  g.fill();
+  const rnd = mulberry32(1907);
+  for (let i = 0; i < 8; i++) {
+    const a = rnd() * TAU;
+    const d = rnd() * 38;
+    g.fillStyle = 'rgba(90,140,140,' + (0.08 + rnd() * 0.12) + ')';
+    g.beginPath();
+    g.arc(64 + Math.cos(a) * d, 64 + Math.sin(a) * d, 3 + rnd() * 8, 0, TAU);
+    g.fill();
+  }
+  moonSprite = c;
+}
+
+glowTeal = makeGlowSprite('#2fd3a8');
+glowMint = makeGlowSprite('#bfffe9');
+starSprite = makeGlowSprite('#eafff8', 64);
+makeMoonSprite();
+
+/* ------------------------------------------------------------------ */
+/* Layout                                                              */
+/* ------------------------------------------------------------------ */
+function buildStars() {
+  stars = [];
+  const rnd = mulberry32(3111);
+  const n = Math.round(clamp((W * H) / 9000, 80, 320));
+  for (let i = 0; i < n; i++) {
+    stars.push({
+      x: rnd() * W,
+      y: rnd() * H * 0.34,
+      s: rnd() < 0.86 ? 0.8 : 1.6,
+      ph: rnd() * TAU,
+      sp: 0.4 + rnd() * 1.6,
+      bright: rnd() < 0.09,
+    });
+  }
+}
+
+function buildFoam() {
+  foam = [];
+  const rnd = mulberry32(5200);
+  for (let b = 0; b < BANDS; b++) {
+    for (let i = 0; i < 22; i++) {
+      foam.push({
+        b: b,
+        x: (i + rnd() * 0.7) * (W / 22),
+        off: (rnd() - 0.5) * 9,
+        s: 1 + rnd() * 3.2,
+        ph: rnd() * TAU,
+      });
+    }
+  }
+}
+
+function buildSparks() {
+  const area = clamp((W * H) / (1920 * 1080), 0.3, 1.5);
+  const n = Math.min(150, Math.round(76 * area * (V.reduced ? 0.5 : 1)));
+  const rnd = mulberry32(8100 + n * 3);
+  sparks = [];
+  for (let i = 0; i < n; i++) {
+    sparks.push({
+      x: rnd() * W,
+      y: H * (0.30 + rnd() * 0.64),
+      size: 4 + rnd() * 10,
+      ph: rnd() * TAU,
+      sp: 0.4 + rnd() * 1.3,
+      vy: -(2 + rnd() * 7),
+      vx: (rnd() - 0.5) * 6,
+    });
+  }
+}
+
+function buildSand() {
+  const top = Math.floor(H * 0.77);
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, W);
+  c.height = Math.max(1, Math.ceil(H - top));
+  const g = c.getContext('2d');
+  g.translate(0, -top);
+
+  const grad = g.createLinearGradient(0, H * 0.77, 0, H);
+  grad.addColorStop(0, '#0b2a33');
+  grad.addColorStop(0.35, '#051b23');
+  grad.addColorStop(1, '#020c12');
+  g.fillStyle = grad;
+  g.fillRect(0, top, W, H - top);
+
+  const sheen = g.createLinearGradient(0, H * 0.775, 0, H * 0.87);
+  sheen.addColorStop(0, 'rgba(127,255,212,0.16)');
+  sheen.addColorStop(0.4, 'rgba(127,255,212,0.05)');
+  sheen.addColorStop(1, 'rgba(127,255,212,0)');
+  g.fillStyle = sheen;
+  g.fillRect(0, H * 0.775, W, H * 0.1);
+
+  const rnd = mulberry32(7300);
+  for (let y = H * 0.79; y < H; y += 6 + rnd() * 7) {
+    g.beginPath();
+    for (let x = 0; x <= W + 8; x += 8) {
+      const wob = waveNoise(x * 0.004, y * 0.01) * 2.4;
+      if (x === 0) g.moveTo(x, y + wob);
+      else g.lineTo(x, y + wob);
+    }
+    g.strokeStyle = 'rgba(127,255,212,' + (0.02 + rnd() * 0.03) + ')';
+    g.lineWidth = 1;
+    g.stroke();
+  }
+
+  for (let i = 0; i < 260; i++) {
+    const x = rnd() * W;
+    const y = H * (0.79 + rnd() * 0.21);
+    const s = 0.6 + rnd() * 2.4;
+    g.fillStyle = rnd() < 0.5 ? 'rgba(4,16,22,0.5)' : 'rgba(127,255,212,0.10)';
+    g.beginPath();
+    g.ellipse(x, y, s * 1.7, s * 0.8, rnd() * TAU, 0, TAU);
+    g.fill();
+  }
+
+  for (let i = 0; i < 26; i++) {
+    const x = rnd() * W;
+    const y = H * 0.78;
+    const h = 20 + rnd() * 90;
+    const w = 3 + rnd() * 12;
+    const ref = g.createLinearGradient(0, y, 0, y + h);
+    ref.addColorStop(0, 'rgba(191,255,233,' + (0.05 + rnd() * 0.05) + ')');
+    ref.addColorStop(1, 'rgba(191,255,233,0)');
+    g.fillStyle = ref;
+    g.fillRect(x, y, w, h);
+  }
+  return { canvas: c, top: top };
+}
+
+function rebuild() {
+  W = view.w;
+  H = view.h;
+  if (!W || !H) return;
+  horizon = H * 0.33;
+  waterBottom = H * 0.79;
+  buildStars();
+  buildFoam();
+  buildSparks();
+  sand = buildSand();
+  meteor.active = false;
+}
+
+view.onResize(rebuild);
+rebuild();
+
+/* ------------------------------------------------------------------ */
+/* Water                                                               */
+/* ------------------------------------------------------------------ */
+function bandY(x, b, t) {
+  const p = (b + 1) / BANDS;
+  const base = horizon + (waterBottom - horizon) * Math.pow(p, 1.7);
+  const amp = (1.2 + p * 9) * (0.55 + P.waves * 0.6);
+  const n = fbm(waveNoise, x * 0.0022 * (0.5 + p) + b * 3.1 + t * 0.04 * P.waves, p * 4 + t * 0.1, 2);
+  return base + Math.sin(x * 0.006 * (0.5 + p) + t * 0.8 * P.waves + b * 2.1) * amp + n * amp * 1.6;
+}
+
+function drawWaves(t) {
+  const step = Math.max(14, W / 110);
+  const glowA = 0.35 + P.glow * 0.65;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  for (let b = 0; b < BANDS; b++) {
+    const p = (b + 1) / BANDS;
+    const pts = [];
+    for (let x = -step; x <= W + step; x += step) pts.push([x, bandY(x, b, t)]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.strokeStyle = rgba('#2fd3a8', (0.04 + p * 0.07) * glowA);
+    ctx.lineWidth = 5 + p * 9;
+    ctx.stroke();
+    ctx.strokeStyle = rgba('#bfffe9', (0.08 + p * 0.15) * glowA);
+    ctx.lineWidth = 1 + p * 1.2;
+    ctx.stroke();
+  }
+  for (let i = 0; i < foam.length; i++) {
+    const f = foam[i];
+    const y = bandY(f.x, f.b, t) + f.off;
+    const p = (f.b + 1) / BANDS;
+    const a = (0.1 + 0.25 * p) * glowA * (0.55 + 0.45 * Math.sin(t * 1.7 + f.ph));
+    ctx.fillStyle = rgba('#d4fff0', a);
+    ctx.beginPath();
+    ctx.ellipse(f.x, y, f.s * (1 + p * 1.4), 0.7 + p * 0.9, 0, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawMoonPath(t) {
+  if (!P.moon) return;
+  const mx = W * 0.62;
+  const my = H * 0.14;
+  const r = clamp(H * 0.032, 14, 38);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.55;
+  const halo = r * 8;
+  ctx.drawImage(glowMint, mx - halo / 2, my - halo / 2, halo, halo);
+  ctx.restore();
+  ctx.globalAlpha = 0.95;
+  ctx.drawImage(moonSprite, mx - r, my - r, r * 2, r * 2);
+  ctx.globalAlpha = 1;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 44; i++) {
+    const p = i / 43;
+    const y = horizon + (waterBottom - horizon) * Math.pow(p, 1.22);
+    const w = W * 0.012 + p * W * 0.055;
+    const a = (0.05 + 0.22 * (1 - p)) * (0.55 + 0.45 * Math.sin(t * 1.7 + i * 1.3));
+    ctx.fillStyle = rgba('#bfffe9', a);
+    ctx.beginPath();
+    ctx.ellipse(mx + Math.sin(t * 0.6 + i) * 6 * p, y, w, 1.3 + p * 2.6, 0, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawWaterline(t) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const y0 = waterBottom + H * 0.004 * (P.tide - 0.5);
+  ctx.beginPath();
+  for (let x = 0; x <= W + 12; x += 12) {
+    const y = y0 + Math.sin(x * 0.012 + t * 1.1) * 2.2 + Math.sin(x * 0.031 - t * 0.7) * 1.2;
+    if (x === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = rgba('#2fd3a8', 0.10 + 0.12 * P.glow);
+  ctx.lineWidth = 7;
+  ctx.stroke();
+  ctx.strokeStyle = rgba('#d4fff0', 0.16 + 0.18 * P.glow);
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* ------------------------------------------------------------------ */
+/* Icons: tide pools and reflections                                   */
+/* ------------------------------------------------------------------ */
+function drawPools(t) {
+  const icons = V.icons.list;
+  const minY = horizon + H * 0.05;
+  for (let i = 0; i < icons.length; i++) {
+    const ic = icons[i];
+    const fade = ic.gone ? 1 - clamp((V.icons._clock - ic.gone) / 1.6, 0, 1) : 1;
+    if (fade <= 0) continue;
+    const appear = smoothstep(0, 1, 1 - ic.fresh);
+    const phase = ((ic.seed % 1000) / 1000) * TAU;
+    const pulse = 0.66 + 0.34 * Math.sin(t * 1.25 + phase);
+    const cx = ic.x + ic.w / 2;
+    const baseY = ic.y + ic.h * 0.96;
+    const py = Math.max(baseY, minY);
+    const rx = ic.w * (0.82 + 0.28 * appear) * (0.7 + P.tide * 0.55);
+    const glowA = (0.22 + P.glow * 0.6) * fade * pulse;
+
+    if (baseY < minY - 2) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.1 * P.glow * fade;
+      ctx.drawImage(glowTeal, cx - rx * 0.4, baseY, rx * 0.8, py - baseY + 8);
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.translate(cx, py);
+    ctx.scale(1, 0.34);
+    ctx.globalCompositeOperation = 'lighter';
+    const gs = rx * 2.5;
+    ctx.globalAlpha = glowA * 0.85;
+    ctx.drawImage(glowTeal, -gs / 2, -gs / 2, gs, gs);
+    ctx.globalAlpha = glowA * 0.5;
+    ctx.fillStyle = '#2fd3a8';
+    ctx.beginPath();
+    ctx.arc(0, 0, rx * 0.7, 0, TAU);
+    ctx.fill();
+    ctx.globalAlpha = fade * (0.2 + P.glow * 0.4);
+    ctx.strokeStyle = '#bfffe9';
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.arc(0, 0, rx * 0.92, 0, TAU);
+    ctx.stroke();
+    const rr = (t * 0.32 + phase / TAU) % 1;
+    ctx.globalAlpha = fade * 0.3 * (1 - rr) * (0.3 + P.glow);
+    ctx.beginPath();
+    ctx.arc(0, 0, rx * (0.9 + rr * 0.95), 0, TAU);
+    ctx.stroke();
+    ctx.globalAlpha = fade * 0.35 * (0.3 + P.glow);
+    ctx.strokeStyle = '#d4fff0';
+    ctx.lineWidth = 1.6;
+    for (let k = 0; k < 3; k++) {
+      const a0 = t * 0.55 + k * 2.1 + phase;
+      ctx.beginPath();
+      ctx.arc(0, 0, rx * (0.97 + 0.025 * Math.sin(t * 1.9 + k)), a0, a0 + 0.75);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function updateSparks(dt, t) {
+  for (let i = 0; i < sparks.length; i++) {
+    const s = sparks[i];
+    const n = sparkNoise(s.x * 0.003 + t * 0.03, s.y * 0.003);
+    s.x += (s.vx + n * 9 + Math.sin(t * 0.7 + s.ph) * 4) * dt;
+    s.y += s.vy * dt;
+    if (s.y < horizon + 6) {
+      s.y = waterBottom - 4;
+      s.x = Math.random() * W;
+    }
+    if (s.x < -20) s.x = W + 20;
+    if (s.x > W + 20) s.x = -20;
+  }
+}
+
+function drawSparks(t) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const icons = V.icons.list;
+  for (let i = 0; i < sparks.length; i++) {
+    const s = sparks[i];
+    let boost = 0;
+    for (let j = 0; j < icons.length; j++) {
+      const ic = icons[j];
+      const dx = s.x - (ic.x + ic.w / 2);
+      const dy = s.y - (ic.y + ic.h / 2);
+      const d = Math.hypot(dx, dy);
+      if (d < ic.w * 1.2) boost = Math.max(boost, 1 - d / (ic.w * 1.2));
+    }
+    const a = (0.15 + 0.35 * P.glow) * (0.5 + 0.5 * Math.sin(t * s.sp + s.ph)) + boost * 0.4 * P.glow;
+    const size = s.size * (1 + boost * 0.5);
+    ctx.globalAlpha = clamp(a, 0, 0.9);
+    ctx.drawImage(i % 3 === 0 ? glowMint : glowTeal, s.x - size / 2, s.y - size / 2, size, size);
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Sky                                                                 */
+/* ------------------------------------------------------------------ */
+function drawSky(t) {
+  V.bg(ctx, W, H, ['#02101d', '#04202a', '#0c5c5c', '#0a4a52', '#052a33', '#02101d', '#02101d']);
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const hg = ctx.createLinearGradient(0, H * 0.27, 0, H * 0.42);
+  hg.addColorStop(0, 'rgba(12,92,92,0)');
+  hg.addColorStop(0.6, 'rgba(47,211,168,0.10)');
+  hg.addColorStop(1, 'rgba(12,92,92,0)');
+  ctx.fillStyle = hg;
+  ctx.fillRect(0, H * 0.27, W, H * 0.15);
+  ctx.restore();
+
+  const count = Math.round(stars.length * P.stars);
+  for (let i = 0; i < count; i++) {
+    const s = stars[i];
+    const tw = 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(t * s.sp + s.ph));
+    ctx.globalAlpha = (0.35 + 0.5 * tw) * clamp(P.stars * 1.6, 0, 1);
+    ctx.fillStyle = '#d4fff0';
+    ctx.fillRect(s.x, s.y, s.s, s.s);
+    if (s.bright) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.35 * tw * P.stars;
+      ctx.drawImage(starSprite, s.x - 9, s.y - 9, 18, 18);
+      ctx.restore();
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  if (P.stars > 0.25) drawMeteor(t);
+}
+
+function drawMeteor(t) {
+  const m = meteor;
+  if (!m.active) {
+    if (t > m.next) {
+      m.active = true;
+      m.t0 = t;
+      m.dur = 0.8 + Math.random() * 0.7;
+      m.x = W * (0.1 + Math.random() * 0.8);
+      m.y = H * (0.03 + Math.random() * 0.2);
+      m.len = W * (0.07 + Math.random() * 0.09);
+      m.ang = Math.PI * (0.6 + Math.random() * 0.22);
+      m.next = t + 12 + Math.random() * 26;
+    }
+    return;
+  }
+  const age = t - m.t0;
+  if (age > m.dur) {
+    m.active = false;
+    return;
+  }
+  const p = age / m.dur;
+  const fade = Math.sin(Math.PI * p);
+  const hx = m.x + Math.cos(m.ang) * m.len * p;
+  const hy = m.y + Math.sin(m.ang) * m.len * p;
+  const tx = hx - Math.cos(m.ang) * m.len * 0.55;
+  const ty = hy - Math.sin(m.ang) * m.len * 0.55;
+  const g = ctx.createLinearGradient(hx, hy, tx, ty);
+  g.addColorStop(0, 'rgba(234,255,248,' + 0.85 * fade + ')');
+  g.addColorStop(1, 'rgba(234,255,248,0)');
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = g;
+  ctx.lineWidth = 1.7;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(hx, hy);
+  ctx.lineTo(tx, ty);
+  ctx.stroke();
+  ctx.globalAlpha = 0.85 * fade;
+  ctx.drawImage(glowMint, hx - 9, hy - 9, 18, 18);
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Frame                                                               */
+/* ------------------------------------------------------------------ */
+V.loop((dt, t) => {
+  drawSky(t);
+  drawWaves(t);
+  drawMoonPath(t);
+  if (sand) ctx.drawImage(sand.canvas, 0, sand.top);
+  drawWaterline(t);
+  drawPools(t);
+  updateSparks(dt, t);
+  drawSparks(t);
+  V.vignette(ctx, W, H, 0.52);
+  V.grain(ctx, W, H, 0.05);
+});
+</script>
+</body>
+</html>

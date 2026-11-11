@@ -1,0 +1,16 @@
+{
+  "id": "snowlight",
+  "name": "Snowlight",
+  "category": "Landscapes",
+  "tagline": "Aurora ribbons over a quiet snow valley.",
+  "desc": "A deep polar night with drifting aurora curtains, moonlit peaks and slow snowfall. Snow gathers in soft mounds beneath your desktop icons, growing as each icon settles into place.",
+  "tags": ["adaptive", "winter", "aurora", "night", "snow"],
+  "thumb": { "from": "#040d14", "to": "#1f6f7a", "accent": "#7fffd4" },
+  "params": [
+    { "group": "Sky", "key": "aurora", "label": "Aurora", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.7 },
+    { "group": "Sky", "key": "moon", "label": "Moon", "type": "toggle", "default": true },
+    { "group": "Sky", "key": "meteors", "label": "Shooting stars", "type": "toggle", "default": true },
+    { "group": "Weather", "key": "snow", "label": "Snowfall", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.6 },
+    { "group": "Weather", "key": "wind", "label": "Wind", "type": "range", "min": 0, "max": 2, "step": 0.1, "default": 1 }
+  ]
+}
